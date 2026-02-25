@@ -51,6 +51,17 @@ ACCENT = "#c8aa6e"
 GREEN = "#4caf50"
 RED = "#f44336"
 
+COMPARE_PLAYER_NAMES = [
+    "HC J P",
+    "Red Bot",
+    "XESPIS",
+    "Sara Chafak",
+    "Jomi",
+    "hc handjob",
+    "Noobalicious",
+    "Ironman Ladd",
+]
+
 
 def ensure_seed_db() -> None:
     if is_postgres_url(get_database_url()):
@@ -285,6 +296,107 @@ def make_xp_distribution(player: str, mode: str = "regular") -> go.Figure:
     return fig
 
 
+def get_fixed_compare_players() -> list[dict]:
+    players = get_players()
+    resolved: list[dict] = []
+    used_values: set[str] = set()
+
+    for target_name in COMPARE_PLAYER_NAMES:
+        target = target_name.lower()
+        match = next(
+            (
+                p for p in players
+                if p["label"].lower() == target
+                or p["player"].lower() == target
+                or p["label"].lower().startswith(f"{target} (")
+            ),
+            None,
+        )
+        if match and match["value"] not in used_values:
+            used_values.add(match["value"])
+            resolved.append({"name": target_name, "value": match["value"]})
+
+    return resolved
+
+
+def make_multi_player_xp_trend(skill: str, fixed_players: list[dict]) -> go.Figure:
+    fig = go.Figure()
+
+    if not skill or not fixed_players:
+        fig.add_annotation(
+            text="No matching fixed players found in the dataset",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(color=TEXT_DIM, size=14)
+        )
+        _style_fig(fig, "XP over time — Group comparison")
+        return fig
+
+    global_min_time = None
+    global_max_time = None
+    global_min_xp = None
+    global_max_xp = None
+
+    for player_cfg in fixed_players:
+        player_value = player_cfg["value"]
+        player_label = player_cfg["name"]
+        player, mode = (player_value.split("|") + ["regular"])[:2]
+        df = get_skill_history(player, skill, mode)
+        if df.empty:
+            continue
+
+        first_ts = df["timestamp"].iloc[0]
+        last_ts = df["timestamp"].iloc[-1]
+        first_xp = int(df["xp"].iloc[0])
+        last_xp = int(df["xp"].iloc[-1])
+        gained_xp = last_xp - first_xp
+
+        color = SKILL_COLORS.get(skill, ACCENT)
+
+        fig.add_trace(go.Scatter(
+            x=df["timestamp"], y=df["xp"],
+            mode="lines+markers",
+            name=player_label,
+            line=dict(width=2),
+            marker=dict(size=5),
+            hovertemplate=(
+                "<b>%{x|%d %b %Y %H:%M UTC}</b>"
+                "<br>Player: " + player_label +
+                "<br>XP: %{y:,.0f}<extra></extra>"
+            )
+        ))
+
+        fig.add_annotation(
+            x=last_ts,
+            y=last_xp,
+            text=f"+{gained_xp:,}",
+            showarrow=False,
+            xshift=28,
+            font=dict(color=color, size=10, family="monospace"),
+            bgcolor="rgba(20,20,24,0.7)"
+        )
+
+        global_min_time = first_ts if global_min_time is None else min(global_min_time, first_ts)
+        global_max_time = last_ts if global_max_time is None else max(global_max_time, last_ts)
+        global_min_xp = first_xp if global_min_xp is None else min(global_min_xp, first_xp)
+        global_max_xp = last_xp if global_max_xp is None else max(global_max_xp, last_xp)
+
+    if not fig.data:
+        fig.add_annotation(
+            text="No matching history found for selected players",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(color=TEXT_DIM, size=14)
+        )
+    else:
+        fig.update_xaxes(range=[global_min_time, global_max_time])
+        if global_min_xp is not None and global_max_xp is not None and global_max_xp > global_min_xp:
+            pad = max(int((global_max_xp - global_min_xp) * 0.05), 1)
+            fig.update_yaxes(range=[global_min_xp - pad, global_max_xp + pad])
+
+    _style_fig(fig, f"XP over time for selected players ({skill})")
+    fig.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
+    return fig
+
+
 # ── layout helpers ────────────────────────────────────────────────────────────
 
 def _hex_to_rgb(hex_color: str) -> str:
@@ -347,7 +459,10 @@ app = dash.Dash(
     suppress_callback_exceptions=True
 )
 
-app.layout = html.Div([
+
+def main_page_layout():
+    players = get_players()
+    return html.Div([
 
     # Header
     html.Div([
@@ -358,8 +473,17 @@ app.layout = html.Div([
                              "color": ACCENT, "fontFamily": "Georgia, serif",
                              "letterSpacing": "1px"}),
         ], style={"display": "flex", "alignItems": "center"}),
-        html.Div(id="last-updated", style={"color": TEXT_DIM, "fontSize": "12px",
-                                           "fontFamily": "monospace"})
+        html.Div([
+            dcc.Link("XP Compare Page", href="/xp-compare", style={
+                "color": ACCENT,
+                "fontSize": "12px",
+                "fontFamily": "monospace",
+                "textDecoration": "none",
+                "marginRight": "14px"
+            }),
+            html.Span(id="last-updated", style={"color": TEXT_DIM, "fontSize": "12px",
+                                                 "fontFamily": "monospace"})
+        ], style={"display": "flex", "alignItems": "center"})
     ], style={
         "display": "flex", "justifyContent": "space-between", "alignItems": "center",
         "padding": "18px 32px", "borderBottom": f"1px solid {BORDER}",
@@ -375,8 +499,8 @@ app.layout = html.Div([
                                         "fontFamily": "Georgia, serif"}),
             dcc.Dropdown(
                 id="player-dropdown",
-                options=[{"label": p["label"], "value": p["value"]} for p in get_players()],
-                value=get_players()[0]["value"] if get_players() else None,
+                options=[{"label": p["label"], "value": p["value"]} for p in players],
+                value=players[0]["value"] if players else None,
                 clearable=False,
                 style={"width": "260px", "fontFamily": "Georgia, serif"},
             )
@@ -442,7 +566,83 @@ app.layout = html.Div([
 ], style={"background": BG, "minHeight": "100vh", "color": TEXT})
 
 
+def compare_page_layout():
+    return html.Div([
+        html.Div([
+            html.Div([
+                html.Span("⚔", style={"fontSize": "28px", "marginRight": "12px"}),
+                html.Span("XP Compare", style={
+                    "fontSize": "22px", "fontWeight": "bold",
+                    "color": ACCENT, "fontFamily": "Georgia, serif", "letterSpacing": "1px"
+                }),
+            ], style={"display": "flex", "alignItems": "center"}),
+            dcc.Link("← Back to Dashboard", href="/", style={
+                "color": ACCENT,
+                "fontSize": "12px",
+                "fontFamily": "monospace",
+                "textDecoration": "none"
+            })
+        ], style={
+            "display": "flex", "justifyContent": "space-between", "alignItems": "center",
+            "padding": "18px 32px", "borderBottom": f"1px solid {BORDER}", "background": CARD_BG
+        }),
+
+        html.Div([
+            html.Div([
+                html.Label("Skill", style={"color": TEXT_DIM, "fontSize": "11px",
+                                           "textTransform": "uppercase", "letterSpacing": "1px",
+                                           "marginBottom": "6px", "fontFamily": "Georgia, serif"}),
+                dcc.Dropdown(
+                    id="compare-skill-dropdown",
+                    options=[{"label": s, "value": s} for s in SKILL_NAMES],
+                    value="Sailing" if "Sailing" in SKILL_NAMES else "Overall",
+                    clearable=False,
+                    style={"width": "220px", "fontFamily": "Georgia, serif"},
+                )
+            ]),
+            html.Div(
+                "Fixed players: HC J P, Red Bot, XESPIS, Sara Chafak, Jomi, hc handjob, Noobalicious, Ironman Ladd",
+                style={"color": TEXT_DIM, "fontSize": "12px", "fontFamily": "monospace", "maxWidth": "640px"}
+            ),
+        ], style={
+            "display": "flex", "gap": "32px", "alignItems": "flex-end",
+            "padding": "20px 32px", "borderBottom": f"1px solid {BORDER}", "background": "#10101a"
+        }),
+
+        html.Div([
+            dcc.Graph(
+                id="xp-compare-chart",
+                config={"displayModeBar": False},
+                style={"height": "540px"}
+            )
+        ], style={"padding": "20px 32px 8px 32px"}),
+
+        html.Div([
+            dcc.Graph(
+                id="xp-overall-compare-chart",
+                config={"displayModeBar": False},
+                style={"height": "540px"}
+            )
+        ], style={"padding": "20px 32px 32px 32px"})
+    ], style={"background": BG, "minHeight": "100vh", "color": TEXT})
+
+
+app.layout = html.Div([
+    dcc.Location(id="url", refresh=False),
+    html.Div(id="page-content")
+])
+
+
 # ── callbacks ─────────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("page-content", "children"),
+    Input("url", "pathname")
+)
+def render_page(pathname):
+    if pathname == "/xp-compare":
+        return compare_page_layout()
+    return main_page_layout()
 
 @app.callback(
     Output("player-dropdown", "options"),
@@ -559,6 +759,18 @@ def update_overview_charts(player_value):
         return empty, empty
     player, mode = (player_value.split("|") + ["regular"])[:2]
     return make_skills_overview(player, mode), make_xp_distribution(player, mode)
+
+
+@app.callback(
+    Output("xp-compare-chart", "figure"),
+    Output("xp-overall-compare-chart", "figure"),
+    Input("compare-skill-dropdown", "value"),
+)
+def update_compare_chart(skill):
+    fixed_players = get_fixed_compare_players()
+    selected_skill_figure = make_multi_player_xp_trend(skill, fixed_players)
+    overall_figure = make_multi_player_xp_trend("Overall", fixed_players)
+    return selected_skill_figure, overall_figure
 
 
 if __name__ == "__main__":
