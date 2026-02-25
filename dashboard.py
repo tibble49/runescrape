@@ -80,6 +80,10 @@ def get_conn():
 
 def get_players() -> list[dict]:
     """Returns list of dicts with player name, mode, and a display label."""
+    mode_labels = {
+        "hardcore_ironman": "HCIM",
+    }
+
     try:
         with get_conn() as conn:
             rows = conn.execute(text(
@@ -88,7 +92,8 @@ def get_players() -> list[dict]:
         results = []
         for player, mode in rows:
             mode = mode or "regular"
-            label = f"{player} ({mode.replace('_', ' ')})" if mode != "regular" else player
+            mode_display = mode_labels.get(mode, mode.replace("_", " "))
+            label = f"{player} ({mode_display})" if mode != "regular" else player
             results.append({"player": player, "mode": mode, "label": label, "value": f"{player}|{mode}"})
         return results
     except Exception:
@@ -261,6 +266,7 @@ def make_xp_distribution(player: str, mode: str = "regular") -> go.Figure:
         hovertemplate="<b>%{label}</b><br>XP: %{value:,.0f}<br>%{percent}<extra></extra>"
     ))
     _style_fig(fig, f"XP Distribution — Top 12 Skills ({player})")
+    fig.update_layout(showlegend=False)
     return fig
 
 
@@ -314,7 +320,7 @@ def stat_card(label: str, value: str, delta: str = "", delta_positive: bool = Tr
         "borderRadius": "8px",
         "padding": "18px 22px",
         "minWidth": "140px",
-        "flex": "1"
+        "flex": "1 1 180px"
     })
 
 
@@ -382,6 +388,7 @@ app.layout = html.Div([
     # Stat cards row
     html.Div(id="stat-cards", style={
         "display": "flex", "gap": "16px",
+        "flexWrap": "wrap",
         "padding": "20px 32px"
     }),
 
