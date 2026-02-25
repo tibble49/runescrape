@@ -26,7 +26,7 @@ SKILL_NAMES = [
     "Overall", "Attack", "Defence", "Strength", "Hitpoints", "Ranged",
     "Prayer", "Magic", "Cooking", "Woodcutting", "Fletching", "Fishing",
     "Firemaking", "Crafting", "Smithing", "Mining", "Herblore", "Agility",
-    "Thieving", "Slayer", "Farming", "Runecraft", "Hunter", "Construction"
+    "Thieving", "Slayer", "Farming", "Runecraft", "Hunter", "Construction", "Sailing"
 ]
 
 # Colour per skill (OSRS-inspired)
@@ -39,6 +39,7 @@ SKILL_COLORS = {
     "Mining": "#708090", "Herblore": "#228b22", "Agility": "#778899",
     "Thieving": "#9370db", "Slayer": "#cc2200", "Farming": "#8fbc8f",
     "Runecraft": "#daa520", "Hunter": "#8b4513", "Construction": "#d2b48c",
+    "Sailing": "#20b2aa",
 }
 
 BG = "#0d0d0f"

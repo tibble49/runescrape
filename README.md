@@ -86,7 +86,7 @@ After a week or two you'll have enough data for meaningful trend lines.
 - **Stat cards** — current level, XP, rank, and XP gained since tracking started
 - **XP trend chart** — XP over time with daily XP-gained bars
 - **Rank trend chart** — rank over time (lower = better, y-axis inverted)
-- **Skills overview** — bar chart of all current skill levels
+- **Skills overview** — bar chart of all current skill levels (including Sailing)
 - **XP distribution** — pie chart of XP spread across your top 12 skills
 - **Multi-player support** — use the Player dropdown to switch between tracked players
 
