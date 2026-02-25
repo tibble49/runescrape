@@ -39,7 +39,6 @@ jobs:
           railway up --ci --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_SERVICE_ID"
 
   deploy-collector:
-    if: ${{ secrets.RAILWAY_COLLECTOR_SERVICE_ID != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -63,6 +62,10 @@ jobs:
           if [ -z "$RAILWAY_TOKEN" ]; then
             echo "RAILWAY_TOKEN secret is required"
             exit 1
+          fi
+          if [ -z "$RAILWAY_COLLECTOR_SERVICE_ID" ]; then
+            echo "RAILWAY_COLLECTOR_SERVICE_ID not set; skipping collector deploy"
+            exit 0
           fi
           if [ -z "$RAILWAY_PROJECT_ID" ] || [ -z "$RAILWAY_ENVIRONMENT_ID" ] || [ -z "$RAILWAY_COLLECTOR_SERVICE_ID" ]; then
             echo "RAILWAY_PROJECT_ID, RAILWAY_ENVIRONMENT_ID, and RAILWAY_COLLECTOR_SERVICE_ID secrets are required"
