@@ -103,14 +103,15 @@ def get_players() -> list[dict]:
 def get_skill_history(player: str, skill: str, mode: str = "regular") -> pd.DataFrame:
     with get_conn() as conn:
         df = pd.read_sql_query(text("""
-        SELECT s.date, sd.rank, sd.level, sd.xp
+        SELECT s.timestamp, sd.rank, sd.level, sd.xp
         FROM skill_data sd
         JOIN snapshots s ON s.id = sd.snapshot_id
         WHERE s.player = :player AND s.mode = :mode AND sd.skill = :skill
         ORDER BY s.timestamp
     """), conn, params={"player": player.lower(), "mode": mode, "skill": skill})
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.groupby("date").last().reset_index()
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+    df = df.dropna(subset=["timestamp"])
+    df = df.drop_duplicates(subset=["timestamp"], keep="last").reset_index(drop=True)
     return df
 
 
@@ -163,14 +164,14 @@ def make_xp_trend(player: str, skill: str, mode: str = "regular") -> go.Figure:
     else:
         # XP area
         fig.add_trace(go.Scatter(
-            x=df["date"], y=df["xp"],
+            x=df["timestamp"], y=df["xp"],
             mode="lines+markers",
             name="XP",
             line=dict(color=color, width=2.5),
             marker=dict(size=6, color=color),
             fill="tozeroy",
             fillcolor=f"rgba({_hex_to_rgb(color)},0.12)",
-            hovertemplate="<b>%{x|%d %b %Y}</b><br>XP: %{y:,.0f}<extra></extra>"
+            hovertemplate="<b>%{x|%d %b %Y %H:%M UTC}</b><br>XP: %{y:,.0f}<extra></extra>"
         ))
 
     _style_fig(fig, f"{skill} — XP over time ({player})")
@@ -191,14 +192,14 @@ def make_rank_trend(player: str, skill: str, mode: str = "regular") -> go.Figure
         )
     else:
         fig.add_trace(go.Scatter(
-            x=df["date"], y=df["rank"],
+            x=df["timestamp"], y=df["rank"],
             mode="lines+markers",
             name="Rank",
             line=dict(color=ACCENT, width=2.5),
             marker=dict(size=6, color=ACCENT),
             fill="tozeroy",
             fillcolor=f"rgba({_hex_to_rgb(ACCENT)},0.10)",
-            hovertemplate="<b>%{x|%d %b %Y}</b><br>Rank: #%{y:,.0f}<extra></extra>"
+            hovertemplate="<b>%{x|%d %b %Y %H:%M UTC}</b><br>Rank: #%{y:,.0f}<extra></extra>"
         ))
 
     _style_fig(fig, f"{skill} — Rank over time ({player})")
@@ -495,7 +496,7 @@ def update_stat_cards(player_value, skill):
     xp_gained = ""
     if len(hist) >= 2:
         gained = int(hist["xp"].iloc[-1]) - int(hist["xp"].iloc[0])
-        xp_gained = f"+{gained:,} XP since {hist['date'].iloc[0].strftime('%d %b %Y')}"
+        xp_gained = f"+{gained:,} XP since {hist['timestamp'].iloc[0].strftime('%d %b %Y %H:%M UTC')}"
 
     overall_row = df_latest[df_latest["skill"] == "Overall"]
     total_level = int(overall_row["level"].iloc[0]) if not overall_row.empty and pd.notna(overall_row["level"].iloc[0]) else "—"

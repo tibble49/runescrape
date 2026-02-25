@@ -178,7 +178,7 @@ You can copy IDs from Railway project/service settings or via Railway CLI.
 Create a second Railway service for the collector job (same repo), then set:
 
 - **Start Command**: `python collector.py`
-- **Schedule/Cron**: `0 8,12,20 * * *`
+- **Schedule/Cron**: `0 1,13,17 * * *` (8am, 12pm, 8pm EST)
 
 This runs at 8:00 AM, 12:00 PM, and 8:00 PM.
 
