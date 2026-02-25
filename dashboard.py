@@ -9,6 +9,7 @@ Requirements:
 
 import sqlite3
 import os
+import shutil
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -16,7 +17,8 @@ import dash
 from dash import dcc, html, Input, Output, callback
 from datetime import datetime
 
-DB_FILE = "osrs_hiscores.db"
+DB_FILE = os.getenv("OSRS_DB_PATH", "osrs_hiscores.db")
+SEED_DB_FILE = os.getenv("OSRS_SEED_DB_PATH", "seed/osrs_hiscores_seed.sqlite3")
 
 SKILL_NAMES = [
     "Overall", "Attack", "Defence", "Strength", "Hitpoints", "Ranged",
@@ -45,6 +47,22 @@ TEXT_DIM = "#7a7a8a"
 ACCENT = "#c8aa6e"
 GREEN = "#4caf50"
 RED = "#f44336"
+
+
+def ensure_seed_db() -> None:
+    if os.path.exists(DB_FILE):
+        return
+
+    db_dir = os.path.dirname(DB_FILE)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+
+    if os.path.exists(SEED_DB_FILE):
+        shutil.copyfile(SEED_DB_FILE, DB_FILE)
+        print(f"Seeded SQLite DB from {SEED_DB_FILE}")
+
+
+ensure_seed_db()
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

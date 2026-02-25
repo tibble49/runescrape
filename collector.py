@@ -14,10 +14,13 @@ Examples:
 
 import argparse
 import sqlite3
+import os
+import shutil
 import requests
 from datetime import datetime, timezone
 
-DB_FILE = "osrs_hiscores.db"
+DB_FILE = os.getenv("OSRS_DB_PATH", "osrs_hiscores.db")
+SEED_DB_FILE = os.getenv("OSRS_SEED_DB_PATH", "seed/osrs_hiscores_seed.sqlite3")
 
 # All available game mode API endpoints
 GAME_MODES = {
@@ -100,6 +103,19 @@ def init_db(conn: sqlite3.Connection):
     conn.commit()
 
 
+def ensure_seed_db() -> None:
+    if os.path.exists(DB_FILE):
+        return
+
+    db_dir = os.path.dirname(DB_FILE)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+
+    if os.path.exists(SEED_DB_FILE):
+        shutil.copyfile(SEED_DB_FILE, DB_FILE)
+        print(f"Seeded SQLite DB from {SEED_DB_FILE}")
+
+
 def fetch_raw(player: str, mode: str) -> list[str]:
     url = GAME_MODES[mode]
     resp = requests.get(url, params={"player": player}, timeout=10)
@@ -165,6 +181,7 @@ def store_snapshot(conn: sqlite3.Connection, player: str, mode: str, lines: list
 
 def collect(entries: list[tuple[str, str]]):
     """entries: list of (player_name, game_mode) tuples"""
+    ensure_seed_db()
     conn = sqlite3.connect(DB_FILE)
     init_db(conn)
 

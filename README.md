@@ -20,6 +20,7 @@ pip install -r requirements.txt
    dashboard.py
    README.md
    requirements.txt
+   seed/osrs_hiscores_seed.sqlite3
 ```
 
 ---
@@ -93,6 +94,20 @@ After a week or two you'll have enough data for meaningful trend lines.
 | `collector.py` | Fetches and stores snapshots |
 | `dashboard.py` | Runs the local web dashboard |
 | `osrs_hiscores.db` | SQLite database (created automatically on first run) |
+| `seed/osrs_hiscores_seed.sqlite3` | Seed snapshot used for first-run cloud initialization |
+
+---
+
+## Railway initial seed data
+
+Yes — this project supports seeding initial dashboard data from your local SQLite snapshot.
+
+- On first run, if the active DB path does not exist, both scripts copy from:
+   `seed/osrs_hiscores_seed.sqlite3`
+- DB path is configurable via env var:
+   `OSRS_DB_PATH` (default: `osrs_hiscores.db`)
+
+This gives Railway an initial dataset immediately after deploy.
 
 ---
 
