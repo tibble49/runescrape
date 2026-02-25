@@ -1,0 +1,526 @@
+"""
+dashboard.py — OSRS Hiscore Trend Dashboard
+Run with: python dashboard.py
+Then open http://127.0.0.1:8050 in your browser.
+
+Requirements:
+    pip install dash plotly pandas
+"""
+
+import sqlite3
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import dash
+from dash import dcc, html, Input, Output, callback
+from datetime import datetime
+
+DB_FILE = "osrs_hiscores.db"
+
+SKILL_NAMES = [
+    "Overall", "Attack", "Defence", "Strength", "Hitpoints", "Ranged",
+    "Prayer", "Magic", "Cooking", "Woodcutting", "Fletching", "Fishing",
+    "Firemaking", "Crafting", "Smithing", "Mining", "Herblore", "Agility",
+    "Thieving", "Slayer", "Farming", "Runecraft", "Hunter", "Construction"
+]
+
+# Colour per skill (OSRS-inspired)
+SKILL_COLORS = {
+    "Overall": "#c8aa6e", "Attack": "#e03030", "Defence": "#4a90d9",
+    "Strength": "#3cb371", "Hitpoints": "#808080", "Ranged": "#6aaa2a",
+    "Prayer": "#e8d48b", "Magic": "#5555ff", "Cooking": "#b05020",
+    "Woodcutting": "#2e8b57", "Fletching": "#3a7d44", "Fishing": "#4682b4",
+    "Firemaking": "#ff8c00", "Crafting": "#c8a050", "Smithing": "#888888",
+    "Mining": "#708090", "Herblore": "#228b22", "Agility": "#778899",
+    "Thieving": "#9370db", "Slayer": "#cc2200", "Farming": "#8fbc8f",
+    "Runecraft": "#daa520", "Hunter": "#8b4513", "Construction": "#d2b48c",
+}
+
+BG = "#0d0d0f"
+CARD_BG = "#141418"
+BORDER = "#2a2a35"
+TEXT = "#e8e0d0"
+TEXT_DIM = "#7a7a8a"
+ACCENT = "#c8aa6e"
+GREEN = "#4caf50"
+RED = "#f44336"
+
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def get_conn():
+    return sqlite3.connect(DB_FILE)
+
+
+def get_players() -> list[dict]:
+    """Returns list of dicts with player name, mode, and a display label."""
+    try:
+        conn = get_conn()
+        rows = conn.execute(
+            "SELECT DISTINCT player, mode FROM snapshots ORDER BY player, mode"
+        ).fetchall()
+        conn.close()
+        results = []
+        for player, mode in rows:
+            mode = mode or "regular"
+            label = f"{player} ({mode.replace('_', ' ')})" if mode != "regular" else player
+            results.append({"player": player, "mode": mode, "label": label, "value": f"{player}|{mode}"})
+        return results
+    except Exception:
+        return []
+
+
+def get_skill_history(player: str, skill: str, mode: str = "regular") -> pd.DataFrame:
+    conn = get_conn()
+    df = pd.read_sql_query("""
+        SELECT s.date, sd.rank, sd.level, sd.xp
+        FROM skill_data sd
+        JOIN snapshots s ON s.id = sd.snapshot_id
+        WHERE s.player = ? AND s.mode = ? AND sd.skill = ?
+        ORDER BY s.timestamp
+    """, conn, params=(player.lower(), mode, skill))
+    conn.close()
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.groupby("date").last().reset_index()
+    return df
+
+
+def get_latest_skills(player: str, mode: str = "regular") -> pd.DataFrame:
+    conn = get_conn()
+    df = pd.read_sql_query("""
+        SELECT sd.skill, sd.rank, sd.level, sd.xp
+        FROM skill_data sd
+        JOIN snapshots s ON s.id = sd.snapshot_id
+        WHERE s.player = ? AND s.mode = ?
+          AND s.id = (
+              SELECT id FROM snapshots
+              WHERE player = ? AND mode = ?
+              ORDER BY timestamp DESC LIMIT 1
+          )
+    """, conn, params=(player.lower(), mode, player.lower(), mode))
+    conn.close()
+    return df
+
+
+def get_snapshot_count(player: str, mode: str = "regular") -> int:
+    conn = get_conn()
+    n = conn.execute(
+        "SELECT COUNT(*) FROM snapshots WHERE player = ? AND mode = ?",
+        (player.lower(), mode)
+    ).fetchone()[0]
+    conn.close()
+    return n
+
+
+def get_first_last_dates(player: str, mode: str = "regular") -> tuple:
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT MIN(date), MAX(date) FROM snapshots WHERE player = ? AND mode = ?",
+        (player.lower(), mode)
+    ).fetchone()
+    conn.close()
+    return row if row else (None, None)
+
+
+# ── chart builders ────────────────────────────────────────────────────────────
+
+def make_xp_trend(player: str, skill: str, mode: str = "regular") -> go.Figure:
+    df = get_skill_history(player, skill, mode)
+    color = SKILL_COLORS.get(skill, ACCENT)
+
+    fig = go.Figure()
+
+    if df.empty or len(df) < 2:
+        fig.add_annotation(
+            text="Not enough data yet — run collector.py daily to build history",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(color=TEXT_DIM, size=14)
+        )
+    else:
+        # XP area
+        fig.add_trace(go.Scatter(
+            x=df["date"], y=df["xp"],
+            mode="lines+markers",
+            name="XP",
+            line=dict(color=color, width=2.5),
+            marker=dict(size=6, color=color),
+            fill="tozeroy",
+            fillcolor=f"rgba({_hex_to_rgb(color)},0.12)",
+            hovertemplate="<b>%{x|%d %b %Y}</b><br>XP: %{y:,.0f}<extra></extra>"
+        ))
+
+    _style_fig(fig, f"{skill} — XP over time ({player})")
+    return fig
+
+
+def make_rank_trend(player: str, skill: str, mode: str = "regular") -> go.Figure:
+    df = get_skill_history(player, skill, mode)
+    color = SKILL_COLORS.get(skill, ACCENT)
+
+    fig = go.Figure()
+
+    if df.empty or len(df) < 2:
+        fig.add_annotation(
+            text="Not enough data yet — run collector.py daily to build history",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(color=TEXT_DIM, size=14)
+        )
+    else:
+        fig.add_trace(go.Scatter(
+            x=df["date"], y=df["rank"],
+            mode="lines+markers",
+            name="Rank",
+            line=dict(color=ACCENT, width=2.5),
+            marker=dict(size=6, color=ACCENT),
+            fill="tozeroy",
+            fillcolor=f"rgba({_hex_to_rgb(ACCENT)},0.10)",
+            hovertemplate="<b>%{x|%d %b %Y}</b><br>Rank: #%{y:,.0f}<extra></extra>"
+        ))
+
+    _style_fig(fig, f"{skill} — Rank over time ({player})")
+    # Invert y-axis: lower rank number = better
+    fig.update_yaxes(autorange="reversed")
+    return fig
+
+
+def make_skills_overview(player: str, mode: str = "regular") -> go.Figure:
+    df = get_latest_skills(player, mode)
+    if df.empty:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No data — run collector.py first",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(color=TEXT_DIM, size=16)
+        )
+        _style_fig(fig, "Skills Overview")
+        return fig
+
+    skills_df = df[df["skill"].isin(SKILL_NAMES)].copy()
+    skills_df["skill"] = pd.Categorical(skills_df["skill"], categories=SKILL_NAMES, ordered=True)
+    skills_df = skills_df.sort_values("skill")
+    skills_df["color"] = skills_df["skill"].map(SKILL_COLORS).fillna(ACCENT)
+    skills_df["level"] = skills_df["level"].fillna(1).astype(int)
+    skills_df["pct"] = (skills_df["level"] / 99 * 100).clip(0, 100)
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=skills_df["skill"],
+        y=skills_df["level"],
+        marker_color=skills_df["color"].tolist(),
+        text=skills_df["level"],
+        textposition="outside",
+        textfont=dict(color=TEXT, size=11),
+        hovertemplate="<b>%{x}</b><br>Level: %{y}<extra></extra>",
+        name="Level"
+    ))
+
+    _style_fig(fig, f"All Skills — Current Levels ({player})")
+    fig.update_yaxes(range=[0, 108])
+    fig.update_layout(showlegend=False)
+    return fig
+
+
+def make_xp_distribution(player: str, mode: str = "regular") -> go.Figure:
+    df = get_latest_skills(player, mode)
+    if df.empty:
+        fig = go.Figure()
+        _style_fig(fig, "XP Distribution")
+        return fig
+
+    skills_df = df[df["skill"].isin(SKILL_NAMES) & (df["skill"] != "Overall")].dropna(subset=["xp"])
+    skills_df = skills_df.sort_values("xp", ascending=False).head(12)
+    skills_df["color"] = skills_df["skill"].map(SKILL_COLORS).fillna(ACCENT)
+
+    fig = go.Figure(go.Pie(
+        labels=skills_df["skill"],
+        values=skills_df["xp"],
+        marker=dict(colors=skills_df["color"].tolist(),
+                    line=dict(color=BG, width=2)),
+        textinfo="label+percent",
+        textfont=dict(color=TEXT, size=12),
+        hole=0.45,
+        hovertemplate="<b>%{label}</b><br>XP: %{value:,.0f}<br>%{percent}<extra></extra>"
+    ))
+    _style_fig(fig, f"XP Distribution — Top 12 Skills ({player})")
+    return fig
+
+
+# ── layout helpers ────────────────────────────────────────────────────────────
+
+def _hex_to_rgb(hex_color: str) -> str:
+    hex_color = hex_color.lstrip("#")
+    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+    return f"{r},{g},{b}"
+
+
+def _style_fig(fig: go.Figure, title: str):
+    fig.update_layout(
+        title=dict(text=title, font=dict(color=TEXT, size=16, family="Georgia, serif"), x=0.02),
+        paper_bgcolor=CARD_BG,
+        plot_bgcolor=CARD_BG,
+        font=dict(color=TEXT, family="Georgia, serif"),
+        margin=dict(l=50, r=30, t=55, b=45),
+        xaxis=dict(
+            gridcolor=BORDER, zeroline=False,
+            tickfont=dict(color=TEXT_DIM, size=11)
+        ),
+        yaxis=dict(
+            gridcolor=BORDER, zeroline=False,
+            tickfont=dict(color=TEXT_DIM, size=11)
+        ),
+        legend=dict(
+            bgcolor="rgba(0,0,0,0)", font=dict(color=TEXT_DIM, size=12)
+        ),
+        hoverlabel=dict(
+            bgcolor="#1e1e28", font_color=TEXT,
+            bordercolor=BORDER
+        )
+    )
+
+
+def stat_card(label: str, value: str, delta: str = "", delta_positive: bool = True):
+    delta_color = GREEN if delta_positive else RED
+    return html.Div([
+        html.Div(label, style={"color": TEXT_DIM, "fontSize": "11px",
+                               "textTransform": "uppercase", "letterSpacing": "1.5px",
+                               "marginBottom": "6px", "fontFamily": "Georgia, serif"}),
+        html.Div(value, style={"color": ACCENT, "fontSize": "26px",
+                               "fontWeight": "bold", "fontFamily": "Georgia, serif",
+                               "lineHeight": "1"}),
+        html.Div(delta, style={"color": delta_color, "fontSize": "12px",
+                               "marginTop": "4px", "fontFamily": "monospace"}) if delta else html.Div()
+    ], style={
+        "background": CARD_BG,
+        "border": f"1px solid {BORDER}",
+        "borderRadius": "8px",
+        "padding": "18px 22px",
+        "minWidth": "140px",
+        "flex": "1"
+    })
+
+
+# ── app ───────────────────────────────────────────────────────────────────────
+
+app = dash.Dash(
+    __name__,
+    title="OSRS Hiscore Dashboard",
+    suppress_callback_exceptions=True
+)
+
+app.layout = html.Div([
+
+    # Header
+    html.Div([
+        html.Div([
+            html.Span("⚔", style={"fontSize": "28px", "marginRight": "12px"}),
+            html.Span("OSRS Hiscore Dashboard",
+                      style={"fontSize": "22px", "fontWeight": "bold",
+                             "color": ACCENT, "fontFamily": "Georgia, serif",
+                             "letterSpacing": "1px"}),
+        ], style={"display": "flex", "alignItems": "center"}),
+        html.Div(id="last-updated", style={"color": TEXT_DIM, "fontSize": "12px",
+                                           "fontFamily": "monospace"})
+    ], style={
+        "display": "flex", "justifyContent": "space-between", "alignItems": "center",
+        "padding": "18px 32px", "borderBottom": f"1px solid {BORDER}",
+        "background": CARD_BG
+    }),
+
+    # Controls bar
+    html.Div([
+        html.Div([
+            html.Label("Player", style={"color": TEXT_DIM, "fontSize": "11px",
+                                        "textTransform": "uppercase",
+                                        "letterSpacing": "1px", "marginBottom": "6px",
+                                        "fontFamily": "Georgia, serif"}),
+            dcc.Dropdown(
+                id="player-dropdown",
+                options=[{"label": p["label"], "value": p["value"]} for p in get_players()],
+                value=get_players()[0]["value"] if get_players() else None,
+                clearable=False,
+                style={"width": "260px", "fontFamily": "Georgia, serif"},
+            )
+        ]),
+        html.Div([
+            html.Label("Skill", style={"color": TEXT_DIM, "fontSize": "11px",
+                                       "textTransform": "uppercase",
+                                       "letterSpacing": "1px", "marginBottom": "6px",
+                                       "fontFamily": "Georgia, serif"}),
+            dcc.Dropdown(
+                id="skill-dropdown",
+                options=[{"label": s, "value": s} for s in SKILL_NAMES],
+                value="Overall",
+                clearable=False,
+                style={"width": "200px", "fontFamily": "Georgia, serif"},
+            )
+        ]),
+    ], style={
+        "display": "flex", "gap": "32px", "alignItems": "flex-end",
+        "padding": "20px 32px", "borderBottom": f"1px solid {BORDER}",
+        "background": "#10101a"
+    }),
+
+    # Stat cards row
+    html.Div(id="stat-cards", style={
+        "display": "flex", "gap": "16px",
+        "padding": "20px 32px"
+    }),
+
+    # Charts grid
+    html.Div([
+        # Top row: XP trend + Rank trend
+        html.Div([
+            dcc.Graph(id="xp-trend-chart",
+                      config={"displayModeBar": False},
+                      style={"flex": "1", "minWidth": "0", "height": "360px"}),
+            dcc.Graph(id="rank-trend-chart",
+                      config={"displayModeBar": False},
+                      style={"flex": "1", "minWidth": "0", "height": "360px"}),
+        ], style={"display": "flex", "gap": "16px", "marginBottom": "16px"}),
+
+        # Bottom row: skills bar + pie
+        html.Div([
+            dcc.Graph(id="skills-overview-chart",
+                      config={"displayModeBar": False},
+                      style={"flex": "2", "minWidth": "0", "height": "360px"}),
+            dcc.Graph(id="xp-distribution-chart",
+                      config={"displayModeBar": False},
+                      style={"flex": "1", "minWidth": "0", "height": "360px"}),
+        ], style={"display": "flex", "gap": "16px"}),
+
+    ], style={"padding": "0 32px 32px 32px"}),
+
+    # Footer hint
+    html.Div(
+        "Run  python collector.py  daily (or via Task Scheduler) to add snapshots and build trend history.",
+        style={"color": TEXT_DIM, "fontSize": "12px", "fontFamily": "monospace",
+               "textAlign": "center", "padding": "0 0 20px", "borderTop": f"1px solid {BORDER}",
+               "paddingTop": "14px"}
+    )
+
+], style={"background": BG, "minHeight": "100vh", "color": TEXT})
+
+
+# ── callbacks ─────────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("player-dropdown", "options"),
+    Output("player-dropdown", "value"),
+    Input("player-dropdown", "id")
+)
+def refresh_players(_):
+    players = get_players()
+    options = [{"label": p["label"], "value": p["value"]} for p in players]
+    value = players[0]["value"] if players else None
+    return options, value
+
+
+@app.callback(
+    Output("skill-dropdown", "value"),
+    Input("skills-overview-chart", "clickData"),
+    Input("xp-distribution-chart", "clickData"),
+    Input("skill-dropdown", "value"),
+)
+def update_skill_from_chart(bar_click, pie_click, current_skill):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return current_skill
+
+    trigger_id = ctx.triggered[0]["prop_id"].split(".")[0]
+
+    if trigger_id == "skills-overview-chart" and bar_click:
+        clicked = bar_click["points"][0].get("x")
+        if clicked in SKILL_NAMES:
+            return clicked
+
+    if trigger_id == "xp-distribution-chart" and pie_click:
+        clicked = pie_click["points"][0].get("label")
+        if clicked in SKILL_NAMES:
+            return clicked
+
+    return current_skill
+
+
+@app.callback(
+    Output("stat-cards", "children"),
+    Output("last-updated", "children"),
+    Input("player-dropdown", "value"),
+    Input("skill-dropdown", "value"),
+)
+def update_stat_cards(player_value, skill):
+    if not player_value:
+        return [], ""
+
+    player, mode = (player_value.split("|") + ["regular"])[:2]
+
+    df_latest = get_latest_skills(player, mode)
+    n_snaps = get_snapshot_count(player, mode)
+    first_date, last_date = get_first_last_dates(player, mode)
+
+    if df_latest.empty:
+        return [stat_card("Snapshots", str(n_snaps))], "No data yet"
+
+    row = df_latest[df_latest["skill"] == skill]
+    level = int(row["level"].iloc[0]) if not row.empty and pd.notna(row["level"].iloc[0]) else "—"
+    xp    = int(row["xp"].iloc[0])    if not row.empty and pd.notna(row["xp"].iloc[0])    else "—"
+    rank  = int(row["rank"].iloc[0])  if not row.empty and pd.notna(row["rank"].iloc[0])  else "—"
+
+    hist = get_skill_history(player, skill, mode)
+    xp_gained = ""
+    if len(hist) >= 2:
+        gained = int(hist["xp"].iloc[-1]) - int(hist["xp"].iloc[0])
+        xp_gained = f"+{gained:,} XP since {hist['date'].iloc[0].strftime('%d %b %Y')}"
+
+    overall_row = df_latest[df_latest["skill"] == "Overall"]
+    total_level = int(overall_row["level"].iloc[0]) if not overall_row.empty and pd.notna(overall_row["level"].iloc[0]) else "—"
+    total_xp    = int(overall_row["xp"].iloc[0])    if not overall_row.empty and pd.notna(overall_row["xp"].iloc[0])    else "—"
+
+    mode_label = mode.replace("_", " ").title()
+    cards = [
+        stat_card("Total Level",    f"{total_level:,}" if isinstance(total_level, int) else total_level),
+        stat_card("Total XP",       f"{total_xp:,}"    if isinstance(total_xp, int)    else total_xp),
+        stat_card(f"{skill} Level", f"{level}"         if isinstance(level, int)        else level),
+        stat_card(f"{skill} XP",    f"{xp:,}"          if isinstance(xp, int)           else xp,
+                  delta=xp_gained, delta_positive=True),
+        stat_card(f"{skill} Rank",  f"#{rank:,}"       if isinstance(rank, int)         else rank),
+        stat_card("Mode",           mode_label),
+        stat_card("Snapshots",      str(n_snaps)),
+    ]
+
+    last_updated = f"Last updated: {last_date}  |  Tracking since: {first_date}" if last_date else ""
+    return cards, last_updated
+
+
+@app.callback(
+    Output("xp-trend-chart", "figure"),
+    Output("rank-trend-chart", "figure"),
+    Input("player-dropdown", "value"),
+    Input("skill-dropdown", "value"),
+)
+def update_trend_charts(player_value, skill):
+    if not player_value or not skill:
+        empty = go.Figure()
+        _style_fig(empty, "")
+        return empty, empty
+    player, mode = (player_value.split("|") + ["regular"])[:2]
+    return make_xp_trend(player, skill, mode), make_rank_trend(player, skill, mode)
+
+
+@app.callback(
+    Output("skills-overview-chart", "figure"),
+    Output("xp-distribution-chart", "figure"),
+    Input("player-dropdown", "value"),
+)
+def update_overview_charts(player_value):
+    if not player_value:
+        empty = go.Figure()
+        _style_fig(empty, "")
+        return empty, empty
+    player, mode = (player_value.split("|") + ["regular"])[:2]
+    return make_skills_overview(player, mode), make_xp_distribution(player, mode)
+
+
+if __name__ == "__main__":
+    print("Starting OSRS Hiscore Dashboard...")
+    print("Open http://127.0.0.1:8050 in your browser")
+    app.run(debug=False)
