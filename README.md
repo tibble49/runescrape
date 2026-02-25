@@ -93,3 +93,51 @@ After a week or two you'll have enough data for meaningful trend lines.
 | `collector.py` | Fetches and stores snapshots |
 | `dashboard.py` | Runs the local web dashboard |
 | `osrs_hiscores.db` | SQLite database (created automatically on first run) |
+
+---
+
+## Railway + GitHub auto-deploy
+
+This repo includes a GitHub Actions workflow at `.github/workflows/railway-deploy.yml`.
+It deploys to Railway automatically on every push to `main`.
+
+### 1) Add GitHub repository secrets
+
+In GitHub: **Settings → Secrets and variables → Actions → New repository secret**
+
+Add:
+
+- `RAILWAY_TOKEN`
+- `RAILWAY_PROJECT_ID`
+- `RAILWAY_ENVIRONMENT_ID`
+- `RAILWAY_SERVICE_ID`
+
+You can copy IDs from Railway project/service settings or via Railway CLI.
+
+### 2) Railway web service start command
+
+`railway.json` is configured with:
+
+```json
+{
+   "deploy": {
+      "startCommand": "python dashboard.py"
+   }
+}
+```
+
+`dashboard.py` is already configured to bind to `0.0.0.0` and use Railway's `PORT` env var.
+
+---
+
+## Railway cron job (run collector.py 3 times/day)
+
+Create a second Railway service for the collector job (same repo), then set:
+
+- **Start Command**: `python collector.py`
+- **Schedule/Cron**: `0 */8 * * *`
+
+This runs every 8 hours (3 times per day).
+
+> Note: `osrs_hiscores.db` is SQLite. For reliable long-term cloud persistence across deploys/restarts,
+> use a persistent volume or migrate to a managed database.

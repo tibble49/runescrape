@@ -8,6 +8,7 @@ Requirements:
 """
 
 import sqlite3
+import os
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -522,5 +523,7 @@ def update_overview_charts(player_value):
 
 if __name__ == "__main__":
     print("Starting OSRS Hiscore Dashboard...")
-    print("Open http://127.0.0.1:8050 in your browser")
-    app.run(debug=False)
+    host = "0.0.0.0"
+    port = int(os.getenv("PORT", "8050"))
+    print(f"Listening on http://{host}:{port}")
+    app.run(host=host, port=port, debug=False)
