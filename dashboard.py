@@ -162,6 +162,11 @@ def make_xp_trend(player: str, skill: str, mode: str = "regular") -> go.Figure:
             showarrow=False, font=dict(color=TEXT_DIM, size=14)
         )
     else:
+        first_ts = df["timestamp"].iloc[0]
+        last_ts = df["timestamp"].iloc[-1]
+        first_xp = float(df["xp"].iloc[0])
+        max_xp = float(df["xp"].max())
+
         # XP area
         fig.add_trace(go.Scatter(
             x=df["timestamp"], y=df["xp"],
@@ -169,10 +174,12 @@ def make_xp_trend(player: str, skill: str, mode: str = "regular") -> go.Figure:
             name="XP",
             line=dict(color=color, width=2.5),
             marker=dict(size=6, color=color),
-            fill="tozeroy",
-            fillcolor=f"rgba({_hex_to_rgb(color)},0.12)",
             hovertemplate="<b>%{x|%d %b %Y %H:%M UTC}</b><br>XP: %{y:,.0f}<extra></extra>"
         ))
+
+        fig.update_xaxes(range=[first_ts, last_ts])
+        if max_xp > first_xp:
+            fig.update_yaxes(range=[first_xp, max_xp])
 
     _style_fig(fig, f"{skill} — XP over time ({player})")
     return fig
@@ -191,16 +198,23 @@ def make_rank_trend(player: str, skill: str, mode: str = "regular") -> go.Figure
             showarrow=False, font=dict(color=TEXT_DIM, size=14)
         )
     else:
+        first_ts = df["timestamp"].iloc[0]
+        last_ts = df["timestamp"].iloc[-1]
+        first_rank = float(df["rank"].iloc[0])
+        min_rank = float(df["rank"].min())
+
         fig.add_trace(go.Scatter(
             x=df["timestamp"], y=df["rank"],
             mode="lines+markers",
             name="Rank",
             line=dict(color=ACCENT, width=2.5),
             marker=dict(size=6, color=ACCENT),
-            fill="tozeroy",
-            fillcolor=f"rgba({_hex_to_rgb(ACCENT)},0.10)",
             hovertemplate="<b>%{x|%d %b %Y %H:%M UTC}</b><br>Rank: #%{y:,.0f}<extra></extra>"
         ))
+
+        fig.update_xaxes(range=[first_ts, last_ts])
+        if first_rank > min_rank:
+            fig.update_yaxes(range=[first_rank, min_rank], autorange="reversed")
 
     _style_fig(fig, f"{skill} — Rank over time ({player})")
     # Invert y-axis: lower rank number = better
