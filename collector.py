@@ -74,6 +74,20 @@ MINIGAME_NAMES = [
     "Phantom Muspah", "Sarachnis", "Scorpia", "Sol Heredit",
     "Spindel", "Vardorvis", "Vetion", "Venenatis", "Zulrah"
 ]
+
+DEFAULT_TRACKED_ENTRIES = [
+    ("tibble49", "regular"),
+    ("HC J P", "regular"),
+    ("Red Bot", "regular"),
+    ("XESPIS", "hardcore_ironman"),
+    ("Sara Chafak", "regular"),
+    ("Jomi", "regular"),
+    ("hc handjob", "regular"),
+    ("Noobalicious", "regular"),
+    ("Ironman Ladd", "regular"),
+]
+
+
 def ensure_seed_db() -> None:
     if is_postgres_url(get_database_url()):
         return
@@ -216,11 +230,7 @@ Available modes:
 
     # Build list of (player, mode) pairs
     if not args.players:
-        # Defaults: collect both accounts
-        entries = [
-            ("tibble49", "regular"),
-            ("xespis",   "hardcore_ironman"),
-        ]
+        entries = DEFAULT_TRACKED_ENTRIES.copy()
     else:
         players = args.players
         modes   = args.modes or []
