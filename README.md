@@ -111,6 +111,7 @@ Add:
 - `RAILWAY_PROJECT_ID`
 - `RAILWAY_ENVIRONMENT_ID`
 - `RAILWAY_SERVICE_ID`
+- `RAILWAY_COLLECTOR_SERVICE_ID` (optional, enables auto-deploy of collector service too)
 
 You can copy IDs from Railway project/service settings or via Railway CLI.
 
