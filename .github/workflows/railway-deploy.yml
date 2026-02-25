@@ -17,9 +17,20 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          registry-url: https://registry.npmjs.org
 
       - name: Install Railway CLI
-        run: npm install -g @railway/cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm config set registry https://registry.npmjs.org/
+          if ! npm install -g @railway/cli@latest --registry=https://registry.npmjs.org/; then
+            echo "npm install failed; falling back to Railway install script"
+            curl -fsSL https://railway.app/install.sh | sh
+            export PATH="$HOME/.railway/bin:$PATH"
+            echo "$HOME/.railway/bin" >> "$GITHUB_PATH"
+          fi
+          railway --version
 
       - name: Set web start command
         run: |
@@ -59,9 +70,20 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          registry-url: https://registry.npmjs.org
 
       - name: Install Railway CLI
-        run: npm install -g @railway/cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm config set registry https://registry.npmjs.org/
+          if ! npm install -g @railway/cli@latest --registry=https://registry.npmjs.org/; then
+            echo "npm install failed; falling back to Railway install script"
+            curl -fsSL https://railway.app/install.sh | sh
+            export PATH="$HOME/.railway/bin:$PATH"
+            echo "$HOME/.railway/bin" >> "$GITHUB_PATH"
+          fi
+          railway --version
 
       - name: Set collector start command
         run: |
@@ -94,4 +116,4 @@ jobs:
             echo "RAILWAY_PROJECT_ID, RAILWAY_ENVIRONMENT_ID, and RAILWAY_COLLECTOR_SERVICE_ID secrets are required"
             exit 1
           fi
-          railway up --ci --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_COLLECTOR_SERVICE_ID"
+          railway up --detach --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT_ID" --service "$RAILWAY_COLLECTOR_SERVICE_ID"
