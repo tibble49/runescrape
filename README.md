@@ -9,7 +9,7 @@ Track your Old School RuneScape skill levels, XP, and ranks over time with a loc
 ### 1. Install dependencies
 
 ```
-pip install requests dash plotly pandas
+pip install -r requirements.txt
 ```
 
 ### 2. Put all three files in the same folder
@@ -19,6 +19,7 @@ pip install requests dash plotly pandas
    collector.py
    dashboard.py
    README.md
+   requirements.txt
 ```
 
 ---
