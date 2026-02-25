@@ -21,6 +21,17 @@ jobs:
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
+      - name: Set web start command
+        run: |
+          cat > railway.json <<'EOF'
+          {
+            "$schema": "https://railway.app/railway.schema.json",
+            "deploy": {
+              "startCommand": "python dashboard.py"
+            }
+          }
+          EOF
+
       - name: Deploy web service
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
@@ -51,6 +62,18 @@ jobs:
 
       - name: Install Railway CLI
         run: npm install -g @railway/cli
+
+      - name: Set collector start command
+        run: |
+          cat > railway.json <<'EOF'
+          {
+            "$schema": "https://railway.app/railway.schema.json",
+            "deploy": {
+              "startCommand": "python collector.py",
+              "cronSchedule": "0 8,12,20 * * *"
+            }
+          }
+          EOF
 
       - name: Deploy collector service
         env:

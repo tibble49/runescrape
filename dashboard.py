@@ -7,15 +7,17 @@ Requirements:
     pip install dash plotly pandas
 """
 
-import sqlite3
 import os
 import shutil
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from sqlalchemy import text
 import dash
 from dash import dcc, html, Input, Output, callback
 from datetime import datetime
+
+from db import get_engine, get_database_url, init_db, is_postgres_url
 
 DB_FILE = os.getenv("OSRS_DB_PATH", "osrs_hiscores.db")
 SEED_DB_FILE = os.getenv("OSRS_SEED_DB_PATH", "seed/osrs_hiscores_seed.sqlite3")
@@ -50,6 +52,9 @@ RED = "#f44336"
 
 
 def ensure_seed_db() -> None:
+    if is_postgres_url(get_database_url()):
+        return
+
     if os.path.exists(DB_FILE):
         return
 
@@ -63,22 +68,22 @@ def ensure_seed_db() -> None:
 
 
 ensure_seed_db()
+init_db(get_engine())
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def get_conn():
-    return sqlite3.connect(DB_FILE)
+    return get_engine().connect()
 
 
 def get_players() -> list[dict]:
     """Returns list of dicts with player name, mode, and a display label."""
     try:
-        conn = get_conn()
-        rows = conn.execute(
-            "SELECT DISTINCT player, mode FROM snapshots ORDER BY player, mode"
-        ).fetchall()
-        conn.close()
+        with get_conn() as conn:
+            rows = conn.execute(text(
+                "SELECT DISTINCT player, mode FROM snapshots ORDER BY player, mode"
+            )).fetchall()
         results = []
         for player, mode in rows:
             mode = mode or "regular"
@@ -90,54 +95,48 @@ def get_players() -> list[dict]:
 
 
 def get_skill_history(player: str, skill: str, mode: str = "regular") -> pd.DataFrame:
-    conn = get_conn()
-    df = pd.read_sql_query("""
+    with get_conn() as conn:
+        df = pd.read_sql_query(text("""
         SELECT s.date, sd.rank, sd.level, sd.xp
         FROM skill_data sd
         JOIN snapshots s ON s.id = sd.snapshot_id
-        WHERE s.player = ? AND s.mode = ? AND sd.skill = ?
+        WHERE s.player = :player AND s.mode = :mode AND sd.skill = :skill
         ORDER BY s.timestamp
-    """, conn, params=(player.lower(), mode, skill))
-    conn.close()
+    """), conn, params={"player": player.lower(), "mode": mode, "skill": skill})
     df["date"] = pd.to_datetime(df["date"])
     df = df.groupby("date").last().reset_index()
     return df
 
 
 def get_latest_skills(player: str, mode: str = "regular") -> pd.DataFrame:
-    conn = get_conn()
-    df = pd.read_sql_query("""
+    with get_conn() as conn:
+        df = pd.read_sql_query(text("""
         SELECT sd.skill, sd.rank, sd.level, sd.xp
         FROM skill_data sd
         JOIN snapshots s ON s.id = sd.snapshot_id
-        WHERE s.player = ? AND s.mode = ?
+        WHERE s.player = :player AND s.mode = :mode
           AND s.id = (
               SELECT id FROM snapshots
-              WHERE player = ? AND mode = ?
+              WHERE player = :player AND mode = :mode
               ORDER BY timestamp DESC LIMIT 1
           )
-    """, conn, params=(player.lower(), mode, player.lower(), mode))
-    conn.close()
+    """), conn, params={"player": player.lower(), "mode": mode})
     return df
 
 
 def get_snapshot_count(player: str, mode: str = "regular") -> int:
-    conn = get_conn()
-    n = conn.execute(
-        "SELECT COUNT(*) FROM snapshots WHERE player = ? AND mode = ?",
-        (player.lower(), mode)
-    ).fetchone()[0]
-    conn.close()
-    return n
+    with get_conn() as conn:
+        n = conn.execute(text(
+            "SELECT COUNT(*) FROM snapshots WHERE player = :player AND mode = :mode"
+        ), {"player": player.lower(), "mode": mode}).scalar_one()
+    return int(n)
 
 
 def get_first_last_dates(player: str, mode: str = "regular") -> tuple:
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT MIN(date), MAX(date) FROM snapshots WHERE player = ? AND mode = ?",
-        (player.lower(), mode)
-    ).fetchone()
-    conn.close()
+    with get_conn() as conn:
+        row = conn.execute(text(
+            "SELECT MIN(date), MAX(date) FROM snapshots WHERE player = :player AND mode = :mode"
+        ), {"player": player.lower(), "mode": mode}).fetchone()
     return row if row else (None, None)
 
 

@@ -16,10 +16,12 @@ pip install -r requirements.txt
 
 ```
 📁 osrs-dashboard/
+   db.py
    collector.py
    dashboard.py
    README.md
    requirements.txt
+   scripts/migrate_sqlite_to_postgres.py
    seed/osrs_hiscores_seed.sqlite3
 ```
 
@@ -33,7 +35,10 @@ pip install -r requirements.txt
 python collector.py
 ```
 
-This fetches tibble49's current stats and saves them to a local database file (`osrs_hiscores.db`).
+This fetches tibble49's current stats and saves them to your active database:
+
+- PostgreSQL if `DATABASE_URL` is set
+- otherwise local SQLite (`osrs_hiscores.db`)
 
 To track a different or additional player:
 ```
@@ -93,6 +98,8 @@ After a week or two you'll have enough data for meaningful trend lines.
 |------|-------------|
 | `collector.py` | Fetches and stores snapshots |
 | `dashboard.py` | Runs the local web dashboard |
+| `db.py` | Shared database schema/engine (Postgres + SQLite fallback) |
+| `scripts/migrate_sqlite_to_postgres.py` | One-time import from local SQLite to Postgres |
 | `osrs_hiscores.db` | SQLite database (created automatically on first run) |
 | `seed/osrs_hiscores_seed.sqlite3` | Seed snapshot used for first-run cloud initialization |
 
@@ -108,6 +115,26 @@ Yes — this project supports seeding initial dashboard data from your local SQL
    `OSRS_DB_PATH` (default: `osrs_hiscores.db`)
 
 This gives Railway an initial dataset immediately after deploy.
+
+---
+
+## PostgreSQL migration (recommended for Railway)
+
+Use Railway Postgres so both `web` and `collector` services share one live database.
+
+### 1) Add Railway Postgres and set `DATABASE_URL`
+
+Set `DATABASE_URL` on **both** services (`web` and `collector`) to the same Railway Postgres connection string.
+
+### 2) One-time import from local SQLite
+
+Run once (locally):
+
+```
+python scripts/migrate_sqlite_to_postgres.py
+```
+
+This copies all rows from your local SQLite DB into PostgreSQL.
 
 ---
 
@@ -151,9 +178,10 @@ You can copy IDs from Railway project/service settings or via Railway CLI.
 Create a second Railway service for the collector job (same repo), then set:
 
 - **Start Command**: `python collector.py`
-- **Schedule/Cron**: `0 */8 * * *`
+- **Schedule/Cron**: `0 8,12,20 * * *`
 
-This runs every 8 hours (3 times per day).
+This runs at 8:00 AM, 12:00 PM, and 8:00 PM.
 
-> Note: `osrs_hiscores.db` is SQLite. For reliable long-term cloud persistence across deploys/restarts,
-> use a persistent volume or migrate to a managed database.
+> Railway cron uses the environment timezone (commonly UTC unless configured otherwise).
+
+> For production reliability, use the shared Postgres setup above.

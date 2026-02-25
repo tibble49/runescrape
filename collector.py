@@ -13,11 +13,21 @@ Examples:
 """
 
 import argparse
-import sqlite3
 import os
 import shutil
 import requests
 from datetime import datetime, timezone
+from sqlalchemy import insert
+
+from db import (
+    get_engine,
+    get_database_url,
+    init_db,
+    is_postgres_url,
+    snapshots_table,
+    skill_data_table,
+    minigame_data_table,
+)
 
 DB_FILE = os.getenv("OSRS_DB_PATH", "osrs_hiscores.db")
 SEED_DB_FILE = os.getenv("OSRS_SEED_DB_PATH", "seed/osrs_hiscores_seed.sqlite3")
@@ -64,46 +74,10 @@ MINIGAME_NAMES = [
     "Phantom Muspah", "Sarachnis", "Scorpia", "Sol Heredit",
     "Spindel", "Vardorvis", "Vetion", "Venenatis", "Zulrah"
 ]
-
-
-def init_db(conn: sqlite3.Connection):
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS snapshots (
-            id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            player    TEXT    NOT NULL,
-            mode      TEXT    NOT NULL DEFAULT 'regular',
-            timestamp TEXT    NOT NULL,
-            date      TEXT    NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS skill_data (
-            snapshot_id INTEGER NOT NULL REFERENCES snapshots(id),
-            skill       TEXT    NOT NULL,
-            rank        INTEGER,
-            level       INTEGER,
-            xp          INTEGER
-        );
-
-        CREATE TABLE IF NOT EXISTS minigame_data (
-            snapshot_id INTEGER NOT NULL REFERENCES snapshots(id),
-            activity    TEXT    NOT NULL,
-            rank        INTEGER,
-            score       INTEGER
-        );
-    """)
-
-    # Add mode column to existing databases that predate this version
-    try:
-        conn.execute("ALTER TABLE snapshots ADD COLUMN mode TEXT NOT NULL DEFAULT 'regular'")
-        conn.commit()
-        print("(Upgraded database to support game modes)")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
-
-    conn.commit()
-
-
 def ensure_seed_db() -> None:
+    if is_postgres_url(get_database_url()):
+        return
+
     if os.path.exists(DB_FILE):
         return
 
@@ -133,16 +107,10 @@ def parse_int(value: str) -> int | None:
         return None
 
 
-def store_snapshot(conn: sqlite3.Connection, player: str, mode: str, lines: list[str]):
+def store_snapshot(engine, player: str, mode: str, lines: list[str]):
     now = datetime.now(timezone.utc)
     timestamp = now.isoformat()
     date = now.strftime("%Y-%m-%d")
-
-    cur = conn.execute(
-        "INSERT INTO snapshots (player, mode, timestamp, date) VALUES (?, ?, ?, ?)",
-        (player.lower(), mode, timestamp, date)
-    )
-    snap_id = cur.lastrowid
 
     skill_rows = []
     minigame_rows = []
@@ -151,7 +119,7 @@ def store_snapshot(conn: sqlite3.Connection, player: str, mode: str, lines: list
         parts = line.split(",")
         if i < len(SKILL_NAMES):
             skill_rows.append((
-                snap_id,
+                None,
                 SKILL_NAMES[i],
                 parse_int(parts[0]),
                 parse_int(parts[1]),
@@ -161,44 +129,67 @@ def store_snapshot(conn: sqlite3.Connection, player: str, mode: str, lines: list
             mi = i - len(SKILL_NAMES)
             name = MINIGAME_NAMES[mi] if mi < len(MINIGAME_NAMES) else f"Activity {mi+1}"
             minigame_rows.append((
-                snap_id,
+                None,
                 name,
                 parse_int(parts[0]),
                 parse_int(parts[1]) if len(parts) > 1 else None
             ))
 
-    conn.executemany(
-        "INSERT INTO skill_data (snapshot_id, skill, rank, level, xp) VALUES (?,?,?,?,?)",
-        skill_rows
-    )
-    conn.executemany(
-        "INSERT INTO minigame_data (snapshot_id, activity, rank, score) VALUES (?,?,?,?)",
-        minigame_rows
-    )
-    conn.commit()
+    with engine.begin() as conn:
+        result = conn.execute(
+            insert(snapshots_table).values(
+                player=player.lower(),
+                mode=mode,
+                timestamp=timestamp,
+                date=date,
+            )
+        )
+        snap_id = result.inserted_primary_key[0]
+
+        skill_payload = [
+            {
+                "snapshot_id": snap_id,
+                "skill": row[1],
+                "rank": row[2],
+                "level": row[3],
+                "xp": row[4],
+            }
+            for row in skill_rows
+        ]
+        minigame_payload = [
+            {
+                "snapshot_id": snap_id,
+                "activity": row[1],
+                "rank": row[2],
+                "score": row[3],
+            }
+            for row in minigame_rows
+        ]
+
+        conn.execute(insert(skill_data_table), skill_payload)
+        conn.execute(insert(minigame_data_table), minigame_payload)
+
     return snap_id
 
 
 def collect(entries: list[tuple[str, str]]):
     """entries: list of (player_name, game_mode) tuples"""
     ensure_seed_db()
-    conn = sqlite3.connect(DB_FILE)
-    init_db(conn)
+    engine = get_engine()
+    init_db(engine)
 
     for player, mode in entries:
         label = f"{player} ({mode})"
         print(f"Fetching {label}...", end=" ")
         try:
             lines = fetch_raw(player, mode)
-            snap_id = store_snapshot(conn, player, mode, lines)
+            snap_id = store_snapshot(engine, player, mode, lines)
             overall = lines[0].split(",") if lines else ["?", "?", "?"]
             level = overall[1] if len(overall) > 1 else "?"
             xp    = overall[2] if len(overall) > 2 else "?"
             print(f"OK (snapshot #{snap_id}, total level {level}, xp {xp})")
         except Exception as e:
             print(f"FAILED — {e}")
-
-    conn.close()
 
 
 def main():

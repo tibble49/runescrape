@@ -2,3 +2,5 @@ requests
 dash
 plotly
 pandas
+SQLAlchemy
+psycopg2-binary
