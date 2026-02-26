@@ -417,7 +417,7 @@ def make_multi_player_xp_trend(skill: str, fixed_players: list[dict]) -> go.Figu
             y=last_xp,
             text=f"+{gained_xp:,}",
             showarrow=False,
-            xshift=28,
+            xshift=12,
             font=dict(color=color, size=10, family="monospace"),
             bgcolor="rgba(20,20,24,0.7)"
         )
@@ -434,13 +434,19 @@ def make_multi_player_xp_trend(skill: str, fixed_players: list[dict]) -> go.Figu
             showarrow=False, font=dict(color=TEXT_DIM, size=14)
         )
     else:
-        fig.update_xaxes(range=[global_min_time, global_max_time])
+        if global_min_time is not None and global_max_time is not None:
+            time_span = global_max_time - global_min_time
+            time_pad = time_span * 0.08 if time_span > pd.Timedelta(0) else pd.Timedelta(hours=6)
+            fig.update_xaxes(range=[global_min_time, global_max_time + time_pad])
         if global_min_xp is not None and global_max_xp is not None and global_max_xp > global_min_xp:
             pad = max(int((global_max_xp - global_min_xp) * 0.05), 1)
             fig.update_yaxes(range=[global_min_xp - pad, global_max_xp + pad])
 
     _style_fig(fig, f"XP over time for selected players ({skill})")
-    fig.update_layout(legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0))
+    fig.update_layout(
+        margin=dict(l=50, r=90, t=65, b=95),
+        legend=dict(orientation="h", yanchor="top", y=-0.16, xanchor="left", x=0),
+    )
     return fig
 
 
