@@ -51,15 +51,14 @@ ACCENT = "#c8aa6e"
 GREEN = "#4caf50"
 RED = "#f44336"
 
+ANCHOR_PLAYER = "XESPIS"
+TRACK_AHEAD_COUNT = 10
+TRACK_BEHIND_COUNT = 3
+DISPLAY_AHEAD_COUNT = 3
+DISPLAY_BEHIND_COUNT = 3
+
 COMPARE_PLAYER_NAMES = [
-    "HC J P",
-    "Red Bot",
     "XESPIS",
-    "Sara Chafak",
-    "Jomi",
-    "hc handjob",
-    "Noobalicious",
-    "Ironman Ladd",
 ]
 
 DEFAULT_PLAYER = "tibble49"
@@ -366,6 +365,110 @@ def get_fixed_compare_players() -> list[dict]:
     return resolved
 
 
+def get_latest_overall_ranks() -> list[dict]:
+    try:
+        with get_conn() as conn:
+            df = pd.read_sql_query(text("""
+                WITH latest AS (
+                    SELECT player, mode, MAX(timestamp) AS max_ts
+                    FROM snapshots
+                    GROUP BY player, mode
+                )
+                SELECT s.player, s.mode, sd.rank
+                FROM snapshots s
+                JOIN latest l
+                  ON l.player = s.player
+                 AND l.mode = s.mode
+                 AND l.max_ts = s.timestamp
+                JOIN skill_data sd
+                  ON sd.snapshot_id = s.id
+                WHERE sd.skill = 'Overall' AND sd.rank IS NOT NULL
+            """), conn)
+
+        if df.empty:
+            return []
+
+        df["player"] = df["player"].astype(str).str.strip()
+        df["mode"] = df["mode"].fillna("regular").astype(str).str.strip().str.lower()
+        df["rank"] = pd.to_numeric(df["rank"], errors="coerce")
+        df = df.dropna(subset=["rank"])
+        df["rank"] = df["rank"].astype(int)
+        df = df.sort_values("rank").drop_duplicates(subset=["player", "mode"], keep="first")
+        return df.to_dict("records")
+    except Exception:
+        return []
+
+
+def _to_compare_payload(rows: list[dict]) -> list[dict]:
+    payload: list[dict] = []
+    seen_values: set[str] = set()
+
+    for row in rows:
+        player = str(row["player"]).strip().lower()
+        mode = str(row["mode"]).strip().lower() or "regular"
+        if not player:
+            continue
+
+        value = f"{player}|{mode}"
+        if value in seen_values:
+            continue
+
+        seen_values.add(value)
+        payload.append({"name": player, "value": value})
+
+    return payload
+
+
+def get_anchor_groups() -> tuple[list[dict], list[dict]]:
+    """
+    Returns:
+      tracked_players: 10 ahead + anchor + 3 behind
+      overall_display_players: 3 ahead + anchor + 3 behind
+    """
+    rows = get_latest_overall_ranks()
+    if not rows:
+        fallback = get_fixed_compare_players()
+        return fallback, fallback
+
+    anchor_candidates = [row for row in rows if str(row["player"]).lower() == ANCHOR_PLAYER.lower()]
+    if not anchor_candidates:
+        fallback = get_fixed_compare_players()
+        return fallback, fallback
+
+    anchor = next((row for row in anchor_candidates if row["mode"] == "regular"), anchor_candidates[0])
+    anchor_mode = anchor["mode"]
+    anchor_rank = int(anchor["rank"])
+
+    same_mode = [row for row in rows if row["mode"] == anchor_mode]
+    ahead = sorted(
+        (row for row in same_mode if int(row["rank"]) < anchor_rank),
+        key=lambda row: int(row["rank"]),
+        reverse=True,
+    )
+    behind = sorted(
+        (row for row in same_mode if int(row["rank"]) > anchor_rank),
+        key=lambda row: int(row["rank"]),
+    )
+
+    tracked_rows = sorted(
+        ahead[:TRACK_AHEAD_COUNT] + [anchor] + behind[:TRACK_BEHIND_COUNT],
+        key=lambda row: int(row["rank"]),
+    )
+    display_rows = sorted(
+        ahead[:DISPLAY_AHEAD_COUNT] + [anchor] + behind[:DISPLAY_BEHIND_COUNT],
+        key=lambda row: int(row["rank"]),
+    )
+
+    tracked_players = _to_compare_payload(tracked_rows)
+    overall_display_players = _to_compare_payload(display_rows)
+
+    if not tracked_players:
+        fallback = get_fixed_compare_players()
+        return fallback, fallback
+
+    return tracked_players, overall_display_players
+
+
 def make_multi_player_xp_trend(skill: str, fixed_players: list[dict]) -> go.Figure:
     fig = go.Figure()
 
@@ -661,7 +764,7 @@ def compare_page_layout():
                 )
             ]),
             html.Div(
-                "Fixed players: HC J P, Red Bot, XESPIS, Sara Chafak, Jomi, hc handjob, Noobalicious, Ironman Ladd",
+                "Tracking: 10 ahead + XESPIS + 3 behind. Overall display: 3 ahead + XESPIS + 3 behind.",
                 style={"color": TEXT_DIM, "fontSize": "12px", "fontFamily": "monospace", "maxWidth": "640px"}
             ),
         ], style={
@@ -831,9 +934,10 @@ def update_overview_charts(player_value):
     Input("compare-skill-dropdown", "value"),
 )
 def update_compare_chart(skill):
-    fixed_players = get_fixed_compare_players()
-    selected_skill_figure = make_multi_player_xp_trend(skill, fixed_players)
-    overall_figure = make_multi_player_xp_trend("Overall", fixed_players)
+    tracked_players, overall_display_players = get_anchor_groups()
+    selected_players = overall_display_players if skill == "Overall" else tracked_players
+    selected_skill_figure = make_multi_player_xp_trend(skill, selected_players)
+    overall_figure = make_multi_player_xp_trend("Overall", overall_display_players)
     return selected_skill_figure, overall_figure
 
 

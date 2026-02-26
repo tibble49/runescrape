@@ -17,6 +17,7 @@ import os
 import shutil
 import requests
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from sqlalchemy import insert
 
 from db import (
@@ -75,17 +76,49 @@ MINIGAME_NAMES = [
     "Spindel", "Vardorvis", "Vetion", "Venenatis", "Zulrah"
 ]
 
-DEFAULT_TRACKED_ENTRIES = [
+ANCHOR_PLAYER = "XESPIS"
+ANCHOR_MODE = "regular"
+TRACK_AHEAD_COUNT = 10
+TRACK_BEHIND_COUNT = 3
+
+BASE_TRACKED_ENTRIES = [
     ("tibble49", "regular"),
-    ("HC J P", "regular"),
-    ("Red Bot", "regular"),
-    ("XESPIS", "hardcore_ironman"),
-    ("Sara Chafak", "regular"),
-    ("Jomi", "regular"),
-    ("hc handjob", "regular"),
-    ("Noobalicious", "regular"),
-    ("Ironman Ladd", "regular"),
+    (ANCHOR_PLAYER, ANCHOR_MODE),
 ]
+
+
+class OverallTableParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.rows: list[tuple[int, str]] = []
+        self._in_tr = False
+        self._in_td = False
+        self._current_td = ""
+        self._current_row: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self._in_tr = True
+            self._current_row = []
+        elif tag == "td" and self._in_tr:
+            self._in_td = True
+            self._current_td = ""
+
+    def handle_endtag(self, tag):
+        if tag == "td" and self._in_td:
+            self._in_td = False
+            self._current_row.append(" ".join(self._current_td.split()))
+        elif tag == "tr" and self._in_tr:
+            self._in_tr = False
+            if len(self._current_row) >= 2:
+                rank_text = self._current_row[0].replace(",", "").strip()
+                player_name = self._current_row[1].strip()
+                if rank_text.isdigit() and player_name:
+                    self.rows.append((int(rank_text), player_name))
+
+    def handle_data(self, data):
+        if self._in_td and data:
+            self._current_td += data
 
 
 def ensure_seed_db() -> None:
@@ -111,6 +144,106 @@ def fetch_raw(player: str, mode: str) -> list[str]:
         raise ValueError(f"Player '{player}' not found on {mode} hiscores.")
     resp.raise_for_status()
     return resp.text.strip().splitlines()
+
+
+def get_overall_rank(player: str, mode: str = "regular") -> int | None:
+    try:
+        lines = fetch_raw(player, mode)
+    except Exception:
+        return None
+
+    if not lines:
+        return None
+
+    parts = lines[0].split(",")
+    if not parts:
+        return None
+
+    return parse_int(parts[0])
+
+
+def fetch_overall_page_rows(page: int) -> list[tuple[int, str]]:
+    url = "https://secure.runescape.com/m=hiscore_oldschool/overall"
+    resp = requests.get(
+        url,
+        params={"table": 0, "page": page},
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=12,
+    )
+    resp.raise_for_status()
+
+    parser = OverallTableParser()
+    parser.feed(resp.text)
+    return parser.rows
+
+
+def get_neighbor_players(anchor_player: str, ahead_count: int, behind_count: int) -> list[str]:
+    anchor_rank = get_overall_rank(anchor_player, ANCHOR_MODE)
+    if not anchor_rank:
+        return []
+
+    start_rank = max(1, anchor_rank - ahead_count)
+    end_rank = anchor_rank + behind_count
+
+    page_start = max(0, (start_rank - 1) // 25)
+    page_end = max(0, (end_rank - 1) // 25)
+    candidate_pages: list[int] = []
+
+    for page_index in range(max(0, page_start - 2), page_end + 3):
+        for candidate in (page_index, page_index * 2, page_index * 2 + 1):
+            if candidate not in candidate_pages:
+                candidate_pages.append(candidate)
+
+    rank_to_player: dict[int, str] = {}
+    required_ranks = set(range(start_rank, end_rank + 1))
+
+    for page in candidate_pages:
+        try:
+            rows = fetch_overall_page_rows(page)
+        except Exception:
+            continue
+
+        for rank, player_name in rows:
+            if start_rank <= rank <= end_rank and player_name:
+                rank_to_player[rank] = player_name
+
+        if required_ranks.issubset(rank_to_player.keys()):
+            break
+
+    if not rank_to_player:
+        return []
+
+    ordered_names: list[str] = []
+    for rank in range(start_rank, end_rank + 1):
+        name = rank_to_player.get(rank)
+        if name and name.lower() not in {n.lower() for n in ordered_names}:
+            ordered_names.append(name)
+
+    if anchor_player.lower() not in {name.lower() for name in ordered_names}:
+        ordered_names.append(anchor_player)
+
+    return ordered_names
+
+
+def build_default_entries() -> list[tuple[str, str]]:
+    entries = BASE_TRACKED_ENTRIES.copy()
+    neighbors = get_neighbor_players(ANCHOR_PLAYER, TRACK_AHEAD_COUNT, TRACK_BEHIND_COUNT)
+
+    if neighbors:
+        entries.extend((name, ANCHOR_MODE) for name in neighbors)
+    else:
+        print("WARNING: Could not resolve XESPIS neighbors from overall hiscores; collecting base entries only.")
+
+    deduped: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for player, mode in entries:
+        key = (player.lower(), mode)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((player, mode))
+
+    return deduped
 
 
 def parse_int(value: str) -> int | None:
@@ -230,7 +363,11 @@ Available modes:
 
     # Build list of (player, mode) pairs
     if not args.players:
-        entries = DEFAULT_TRACKED_ENTRIES.copy()
+        entries = build_default_entries()
+        print(
+            f"Default tracking set: {TRACK_AHEAD_COUNT} ahead + {TRACK_BEHIND_COUNT} behind {ANCHOR_PLAYER} "
+            f"(total {len(entries)} players/modes)."
+        )
     else:
         players = args.players
         modes   = args.modes or []

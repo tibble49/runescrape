@@ -5,6 +5,10 @@
   height: 38px;
 }
 
+.Select {
+  position: relative;
+}
+
 .Select-placeholder,
 .Select--single > .Select-control .Select-value {
   line-height: 36px;
@@ -12,6 +16,8 @@
 
 .Select-input {
   height: 36px;
+  position: relative;
+  z-index: 2;
 }
 
 .Select-input > input {
@@ -21,5 +27,18 @@
 }
 
 .Select-menu-outer {
+  top: 100%;
+  margin-top: 2px;
+  max-height: 260px;
   z-index: 3000;
+}
+
+.Select-menu {
+  max-height: 260px;
+}
+
+.VirtualizedSelectOption,
+.Select-option {
+  min-height: 34px;
+  line-height: 34px;
 }
