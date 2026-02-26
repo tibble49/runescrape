@@ -162,6 +162,8 @@ def get_skill_history(player: str, skill: str, mode: str = "regular") -> pd.Data
         ORDER BY s.timestamp
     """), conn, params={"player": player.lower(), "mode": mode, "skill": skill})
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+    for col in ["rank", "level", "xp"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
     df = df.dropna(subset=["timestamp"])
     df = df.drop_duplicates(subset=["timestamp"], keep="last").reset_index(drop=True)
     return df
@@ -205,25 +207,26 @@ def get_first_last_dates(player: str, mode: str = "regular") -> tuple[str | None
 
 def make_xp_trend(player: str, skill: str, mode: str = "regular") -> go.Figure:
     df = get_skill_history(player, skill, mode)
+    df_plot = df.dropna(subset=["xp"]).copy()
     color = SKILL_COLORS.get(skill, ACCENT)
 
     fig = go.Figure()
 
-    if df.empty or len(df) < 2:
+    if df_plot.empty or len(df_plot) < 2:
         fig.add_annotation(
             text="Not enough data yet — run collector.py daily to build history",
             xref="paper", yref="paper", x=0.5, y=0.5,
             showarrow=False, font=dict(color=TEXT_DIM, size=14)
         )
     else:
-        first_ts = df["timestamp"].iloc[0]
-        last_ts = df["timestamp"].iloc[-1]
-        first_xp = float(df["xp"].iloc[0])
-        max_xp = float(df["xp"].max())
+        first_ts = df_plot["timestamp"].iloc[0]
+        last_ts = df_plot["timestamp"].iloc[-1]
+        first_xp = float(df_plot["xp"].iloc[0])
+        max_xp = float(df_plot["xp"].max())
 
         # XP area
         fig.add_trace(go.Scatter(
-            x=df["timestamp"], y=df["xp"],
+            x=df_plot["timestamp"], y=df_plot["xp"],
             mode="lines+markers",
             name="XP",
             line=dict(color=color, width=2.5),
@@ -241,24 +244,25 @@ def make_xp_trend(player: str, skill: str, mode: str = "regular") -> go.Figure:
 
 def make_rank_trend(player: str, skill: str, mode: str = "regular") -> go.Figure:
     df = get_skill_history(player, skill, mode)
+    df_plot = df.dropna(subset=["rank"]).copy()
     color = SKILL_COLORS.get(skill, ACCENT)
 
     fig = go.Figure()
 
-    if df.empty or len(df) < 2:
+    if df_plot.empty or len(df_plot) < 2:
         fig.add_annotation(
             text="Not enough data yet — run collector.py daily to build history",
             xref="paper", yref="paper", x=0.5, y=0.5,
             showarrow=False, font=dict(color=TEXT_DIM, size=14)
         )
     else:
-        first_ts = df["timestamp"].iloc[0]
-        last_ts = df["timestamp"].iloc[-1]
-        first_rank = float(df["rank"].iloc[0])
-        min_rank = float(df["rank"].min())
+        first_ts = df_plot["timestamp"].iloc[0]
+        last_ts = df_plot["timestamp"].iloc[-1]
+        first_rank = float(df_plot["rank"].iloc[0])
+        min_rank = float(df_plot["rank"].min())
 
         fig.add_trace(go.Scatter(
-            x=df["timestamp"], y=df["rank"],
+            x=df_plot["timestamp"], y=df_plot["rank"],
             mode="lines+markers",
             name="Rank",
             line=dict(color=ACCENT, width=2.5),
