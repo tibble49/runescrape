@@ -14,7 +14,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from sqlalchemy import text
 import dash
-from dash import dcc, html, Input, Output, callback
+from dash import dcc, html, Input, Output, State, callback
 from datetime import datetime
 
 from db import get_engine, get_database_url, init_db, is_postgres_url
@@ -61,6 +61,8 @@ COMPARE_PLAYER_NAMES = [
     "Noobalicious",
     "Ironman Ladd",
 ]
+
+DEFAULT_PLAYER = "tibble49"
 
 
 def ensure_seed_db() -> None:
@@ -109,6 +111,25 @@ def get_players() -> list[dict]:
         return results
     except Exception:
         return []
+
+
+def choose_player_value(players: list[dict], current_value: str | None = None) -> str | None:
+    if not players:
+        return None
+
+    available_values = {p["value"] for p in players}
+    if current_value in available_values:
+        return current_value
+
+    exact_default = f"{DEFAULT_PLAYER}|regular"
+    if exact_default in available_values:
+        return exact_default
+
+    for player in players:
+        if player["player"].lower() == DEFAULT_PLAYER:
+            return player["value"]
+
+    return players[0]["value"]
 
 
 def get_skill_history(player: str, skill: str, mode: str = "regular") -> pd.DataFrame:
@@ -462,6 +483,7 @@ app = dash.Dash(
 
 def main_page_layout():
     players = get_players()
+    default_player_value = choose_player_value(players)
     return html.Div([
 
     # Header
@@ -479,6 +501,12 @@ def main_page_layout():
                 "fontSize": "12px",
                 "fontFamily": "monospace",
                 "textDecoration": "none",
+                "marginRight": "14px"
+            }),
+            html.Span(id="current-player-label", style={
+                "color": TEXT_DIM,
+                "fontSize": "12px",
+                "fontFamily": "monospace",
                 "marginRight": "14px"
             }),
             html.Span(id="last-updated", style={"color": TEXT_DIM, "fontSize": "12px",
@@ -500,7 +528,7 @@ def main_page_layout():
             dcc.Dropdown(
                 id="player-dropdown",
                 options=[{"label": p["label"], "value": p["value"]} for p in players],
-                value=players[0]["value"] if players else None,
+                value=default_player_value,
                 clearable=False,
                 style={"width": "260px", "fontFamily": "Georgia, serif"},
             )
@@ -647,12 +675,13 @@ def render_page(pathname):
 @app.callback(
     Output("player-dropdown", "options"),
     Output("player-dropdown", "value"),
-    Input("player-dropdown", "id")
+    Input("player-dropdown", "id"),
+    State("player-dropdown", "value")
 )
-def refresh_players(_):
+def refresh_players(_, current_value):
     players = get_players()
     options = [{"label": p["label"], "value": p["value"]} for p in players]
-    value = players[0]["value"] if players else None
+    value = choose_player_value(players, current_value)
     return options, value
 
 
@@ -684,22 +713,26 @@ def update_skill_from_chart(bar_click, pie_click, current_skill):
 
 @app.callback(
     Output("stat-cards", "children"),
+    Output("current-player-label", "children"),
     Output("last-updated", "children"),
     Input("player-dropdown", "value"),
     Input("skill-dropdown", "value"),
 )
 def update_stat_cards(player_value, skill):
     if not player_value:
-        return [], ""
+        return [], "", ""
 
     player, mode = (player_value.split("|") + ["regular"])[:2]
+    mode_label = mode.replace("_", " ").title()
+    player_label = player if mode == "regular" else f"{player} ({mode_label})"
+    header_player_text = f"Current player: {player_label}"
 
     df_latest = get_latest_skills(player, mode)
     n_snaps = get_snapshot_count(player, mode)
     first_date, last_date = get_first_last_dates(player, mode)
 
     if df_latest.empty:
-        return [stat_card("Snapshots", str(n_snaps))], "No data yet"
+        return [stat_card("Snapshots", str(n_snaps))], header_player_text, "No data yet"
 
     row = df_latest[df_latest["skill"] == skill]
     level = int(row["level"].iloc[0]) if not row.empty and pd.notna(row["level"].iloc[0]) else "—"
@@ -716,7 +749,6 @@ def update_stat_cards(player_value, skill):
     total_level = int(overall_row["level"].iloc[0]) if not overall_row.empty and pd.notna(overall_row["level"].iloc[0]) else "—"
     total_xp    = int(overall_row["xp"].iloc[0])    if not overall_row.empty and pd.notna(overall_row["xp"].iloc[0])    else "—"
 
-    mode_label = mode.replace("_", " ").title()
     cards = [
         stat_card("Total Level",    f"{total_level:,}" if isinstance(total_level, int) else total_level),
         stat_card("Total XP",       f"{total_xp:,}"    if isinstance(total_xp, int)    else total_xp),
@@ -729,7 +761,7 @@ def update_stat_cards(player_value, skill):
     ]
 
     last_updated = f"Last updated: {last_date}  |  Tracking since: {first_date}" if last_date else ""
-    return cards, last_updated
+    return cards, header_player_text, last_updated
 
 
 @app.callback(
