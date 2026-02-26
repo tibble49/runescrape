@@ -57,8 +57,15 @@ TRACK_BEHIND_COUNT = 3
 DISPLAY_AHEAD_COUNT = 3
 DISPLAY_BEHIND_COUNT = 3
 
-COMPARE_PLAYER_NAMES = [
+FALLBACK_COMPARE_PLAYER_NAMES = [
+    "HC J P",
+    "Red Bot",
     "XESPIS",
+    "Sara Chafak",
+    "Jomi",
+    "hc handjob",
+    "Noobalicious",
+    "Ironman Ladd",
 ]
 
 DEFAULT_PLAYER = "tibble49"
@@ -347,7 +354,7 @@ def get_fixed_compare_players() -> list[dict]:
     resolved: list[dict] = []
     used_values: set[str] = set()
 
-    for target_name in COMPARE_PLAYER_NAMES:
+    for target_name in FALLBACK_COMPARE_PLAYER_NAMES:
         target = target_name.lower()
         match = next(
             (
@@ -462,7 +469,8 @@ def get_anchor_groups() -> tuple[list[dict], list[dict]]:
     tracked_players = _to_compare_payload(tracked_rows)
     overall_display_players = _to_compare_payload(display_rows)
 
-    if not tracked_players:
+    # If dynamic set is too small, use historical fixed players fallback.
+    if len(tracked_players) < 3:
         fallback = get_fixed_compare_players()
         return fallback, fallback
 

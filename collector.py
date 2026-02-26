@@ -110,11 +110,19 @@ class OverallTableParser(HTMLParser):
             self._current_row.append(" ".join(self._current_td.split()))
         elif tag == "tr" and self._in_tr:
             self._in_tr = False
-            if len(self._current_row) >= 2:
-                rank_text = self._current_row[0].replace(",", "").strip()
-                player_name = self._current_row[1].strip()
-                if rank_text.isdigit() and player_name:
-                    self.rows.append((int(rank_text), player_name))
+            if len(self._current_row) >= 3:
+                rank_idx = None
+                for idx, cell in enumerate(self._current_row):
+                    candidate = cell.replace(",", "").strip()
+                    if candidate.isdigit():
+                        rank_idx = idx
+                        break
+
+                if rank_idx is not None and rank_idx + 1 < len(self._current_row):
+                    player_name = self._current_row[rank_idx + 1].strip()
+                    rank_text = self._current_row[rank_idx].replace(",", "").strip()
+                    if rank_text.isdigit() and player_name:
+                        self.rows.append((int(rank_text), player_name))
 
     def handle_data(self, data):
         if self._in_td and data:
@@ -185,13 +193,14 @@ def get_neighbor_players(anchor_player: str, ahead_count: int, behind_count: int
     start_rank = max(1, anchor_rank - ahead_count)
     end_rank = anchor_rank + behind_count
 
-    page_start = max(0, (start_rank - 1) // 25)
-    page_end = max(0, (end_rank - 1) // 25)
+    # OSRS hiscore UI commonly uses page=1 for ranks 1-25 (page=0 can mirror first page).
+    page_start = max(1, ((start_rank - 1) // 25) + 1)
+    page_end = max(1, ((end_rank - 1) // 25) + 1)
     candidate_pages: list[int] = []
 
-    for page_index in range(max(0, page_start - 2), page_end + 3):
-        for candidate in (page_index, page_index * 2, page_index * 2 + 1):
-            if candidate not in candidate_pages:
+    for page_index in range(max(1, page_start - 1), page_end + 2):
+        for candidate in (page_index - 1, page_index, page_index + 1):
+            if candidate >= 0 and candidate not in candidate_pages:
                 candidate_pages.append(candidate)
 
     rank_to_player: dict[int, str] = {}
@@ -231,6 +240,10 @@ def build_default_entries() -> list[tuple[str, str]]:
 
     if neighbors:
         entries.extend((name, ANCHOR_MODE) for name in neighbors)
+        print(
+            f"Resolved neighbors around {ANCHOR_PLAYER}: {len(neighbors)} players "
+            f"(target {TRACK_AHEAD_COUNT + TRACK_BEHIND_COUNT + 1})."
+        )
     else:
         print("WARNING: Could not resolve XESPIS neighbors from overall hiscores; collecting base entries only.")
 
