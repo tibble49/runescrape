@@ -52,20 +52,14 @@ GREEN = "#4caf50"
 RED = "#f44336"
 
 ANCHOR_PLAYER = "XESPIS"
+ANCHOR_MODE = "hardcore_ironman"
 TRACK_AHEAD_COUNT = 10
 TRACK_BEHIND_COUNT = 3
 DISPLAY_AHEAD_COUNT = 3
 DISPLAY_BEHIND_COUNT = 3
 
 FALLBACK_COMPARE_PLAYER_NAMES = [
-    "HC J P",
-    "Red Bot",
     "XESPIS",
-    "Sara Chafak",
-    "Jomi",
-    "hc handjob",
-    "Noobalicious",
-    "Ironman Ladd",
 ]
 
 DEFAULT_PLAYER = "tibble49"
@@ -356,15 +350,18 @@ def get_fixed_compare_players() -> list[dict]:
 
     for target_name in FALLBACK_COMPARE_PLAYER_NAMES:
         target = target_name.lower()
-        match = next(
+        hcim_match = next(
             (
                 p for p in players
-                if p["label"].lower() == target
-                or p["player"].lower() == target
-                or p["label"].lower().startswith(f"{target} (")
+                if p["mode"] == ANCHOR_MODE and (
+                    p["label"].lower() == target
+                    or p["player"].lower() == target
+                    or p["label"].lower().startswith(f"{target} (")
+                )
             ),
             None,
         )
+        match = hcim_match
         if match and match["value"] not in used_values:
             used_values.add(match["value"])
             resolved.append({"name": target_name, "value": match["value"]})
@@ -442,7 +439,7 @@ def get_anchor_groups() -> tuple[list[dict], list[dict]]:
         fallback = get_fixed_compare_players()
         return fallback, fallback
 
-    anchor = next((row for row in anchor_candidates if row["mode"] == "regular"), anchor_candidates[0])
+    anchor = next((row for row in anchor_candidates if row["mode"] == ANCHOR_MODE), anchor_candidates[0])
     anchor_mode = anchor["mode"]
     anchor_rank = int(anchor["rank"])
 
@@ -772,7 +769,7 @@ def compare_page_layout():
                 )
             ]),
             html.Div(
-                "Tracking: 10 ahead + XESPIS + 3 behind. Overall display: 3 ahead + XESPIS + 3 behind.",
+                "Tracking (HCIM): 10 ahead + XESPIS + 3 behind. Overall display: 3 ahead + XESPIS + 3 behind.",
                 style={"color": TEXT_DIM, "fontSize": "12px", "fontFamily": "monospace", "maxWidth": "640px"}
             ),
         ], style={

@@ -77,7 +77,7 @@ MINIGAME_NAMES = [
 ]
 
 ANCHOR_PLAYER = "XESPIS"
-ANCHOR_MODE = "regular"
+ANCHOR_MODE = "hardcore_ironman"
 TRACK_AHEAD_COUNT = 10
 TRACK_BEHIND_COUNT = 3
 
@@ -85,6 +85,15 @@ BASE_TRACKED_ENTRIES = [
     ("tibble49", "regular"),
     (ANCHOR_PLAYER, ANCHOR_MODE),
 ]
+
+HISCORE_OVERALL_PAGES = {
+    "regular": "https://secure.runescape.com/m=hiscore_oldschool/overall",
+    "ironman": "https://secure.runescape.com/m=hiscore_oldschool_ironman/overall",
+    "hardcore_ironman": "https://secure.runescape.com/m=hiscore_oldschool_hardcore_ironman/overall",
+    "ultimate_ironman": "https://secure.runescape.com/m=hiscore_oldschool_ultimate/overall",
+    "deadman": "https://secure.runescape.com/m=hiscore_oldschool_deadman/overall",
+    "seasonal": "https://secure.runescape.com/m=hiscore_oldschool_seasonal/overall",
+}
 
 
 class OverallTableParser(HTMLParser):
@@ -170,8 +179,8 @@ def get_overall_rank(player: str, mode: str = "regular") -> int | None:
     return parse_int(parts[0])
 
 
-def fetch_overall_page_rows(page: int) -> list[tuple[int, str]]:
-    url = "https://secure.runescape.com/m=hiscore_oldschool/overall"
+def fetch_overall_page_rows(page: int, mode: str) -> list[tuple[int, str]]:
+    url = HISCORE_OVERALL_PAGES.get(mode, HISCORE_OVERALL_PAGES["regular"])
     resp = requests.get(
         url,
         params={"table": 0, "page": page},
@@ -185,8 +194,8 @@ def fetch_overall_page_rows(page: int) -> list[tuple[int, str]]:
     return parser.rows
 
 
-def get_neighbor_players(anchor_player: str, ahead_count: int, behind_count: int) -> list[str]:
-    anchor_rank = get_overall_rank(anchor_player, ANCHOR_MODE)
+def get_neighbor_players(anchor_player: str, ahead_count: int, behind_count: int, mode: str = ANCHOR_MODE) -> list[str]:
+    anchor_rank = get_overall_rank(anchor_player, mode)
     if not anchor_rank:
         return []
 
@@ -208,7 +217,7 @@ def get_neighbor_players(anchor_player: str, ahead_count: int, behind_count: int
 
     for page in candidate_pages:
         try:
-            rows = fetch_overall_page_rows(page)
+            rows = fetch_overall_page_rows(page, mode)
         except Exception:
             continue
 
@@ -236,7 +245,7 @@ def get_neighbor_players(anchor_player: str, ahead_count: int, behind_count: int
 
 def build_default_entries() -> list[tuple[str, str]]:
     entries = BASE_TRACKED_ENTRIES.copy()
-    neighbors = get_neighbor_players(ANCHOR_PLAYER, TRACK_AHEAD_COUNT, TRACK_BEHIND_COUNT)
+    neighbors = get_neighbor_players(ANCHOR_PLAYER, TRACK_AHEAD_COUNT, TRACK_BEHIND_COUNT, ANCHOR_MODE)
 
     if neighbors:
         entries.extend((name, ANCHOR_MODE) for name in neighbors)
