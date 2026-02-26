@@ -171,12 +171,14 @@ def get_snapshot_count(player: str, mode: str = "regular") -> int:
     return int(n)
 
 
-def get_first_last_dates(player: str, mode: str = "regular") -> tuple:
+def get_first_last_dates(player: str, mode: str = "regular") -> tuple[str | None, str | None]:
     with get_conn() as conn:
         row = conn.execute(text(
             "SELECT MIN(date), MAX(date) FROM snapshots WHERE player = :player AND mode = :mode"
         ), {"player": player.lower(), "mode": mode}).fetchone()
-    return row if row else (None, None)
+    if not row:
+        return None, None
+    return row[0], row[1]
 
 
 # ── chart builders ────────────────────────────────────────────────────────────
