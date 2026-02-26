@@ -103,14 +103,34 @@ def get_players() -> list[dict]:
                 "SELECT DISTINCT player, mode FROM snapshots ORDER BY player, mode"
             )).fetchall()
         results = []
+        seen_values: set[str] = set()
         for player, mode in rows:
-            mode = mode or "regular"
+            raw_player = (player or "").strip()
+            normalized_player = raw_player.lower()
+            mode = (mode or "regular").strip().lower() or "regular"
             mode_display = mode_labels.get(mode, mode.replace("_", " "))
-            label = f"{player} ({mode_display})" if mode != "regular" else player
-            results.append({"player": player, "mode": mode, "label": label, "value": f"{player}|{mode}"})
+            display_player = raw_player or normalized_player
+            value = f"{normalized_player}|{mode}"
+
+            if not normalized_player or value in seen_values:
+                continue
+
+            seen_values.add(value)
+            label = f"{display_player} ({mode_display})" if mode != "regular" else display_player
+            results.append({"player": normalized_player, "mode": mode, "label": label, "value": value})
         return results
     except Exception:
         return []
+
+
+def parse_player_value(player_value: str | None) -> tuple[str, str]:
+    if not player_value:
+        return "", "regular"
+
+    player, mode = (player_value.split("|", 1) + ["regular"])[:2]
+    normalized_player = player.strip().lower()
+    normalized_mode = (mode or "regular").strip().lower() or "regular"
+    return normalized_player, normalized_mode
 
 
 def choose_player_value(players: list[dict], current_value: str | None = None) -> str | None:
@@ -724,7 +744,7 @@ def update_stat_cards(player_value, skill):
     if not player_value:
         return [], "", ""
 
-    player, mode = (player_value.split("|") + ["regular"])[:2]
+    player, mode = parse_player_value(player_value)
     mode_label = mode.replace("_", " ").title()
     player_label = player if mode == "regular" else f"{player} ({mode_label})"
     header_player_text = f"Current player: {player_label}"
@@ -777,7 +797,7 @@ def update_trend_charts(player_value, skill):
         empty = go.Figure()
         _style_fig(empty, "")
         return empty, empty
-    player, mode = (player_value.split("|") + ["regular"])[:2]
+    player, mode = parse_player_value(player_value)
     return make_xp_trend(player, skill, mode), make_rank_trend(player, skill, mode)
 
 
@@ -791,7 +811,7 @@ def update_overview_charts(player_value):
         empty = go.Figure()
         _style_fig(empty, "")
         return empty, empty
-    player, mode = (player_value.split("|") + ["regular"])[:2]
+    player, mode = parse_player_value(player_value)
     return make_skills_overview(player, mode), make_xp_distribution(player, mode)
 
 
