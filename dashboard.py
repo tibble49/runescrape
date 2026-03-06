@@ -8,6 +8,7 @@ Requirements:
 """
 
 import os
+import json
 import shutil
 import pandas as pd
 import plotly.graph_objects as go
@@ -21,6 +22,7 @@ from db import get_engine, get_database_url, init_db, is_postgres_url
 
 DB_FILE = os.getenv("OSRS_DB_PATH", "osrs_hiscores.db")
 SEED_DB_FILE = os.getenv("OSRS_SEED_DB_PATH", "seed/osrs_hiscores_seed.sqlite3")
+DEAD_HCIM_FILE = os.getenv("OSRS_DEAD_HCIM_PATH", "assets/dead_hcim_players.json")
 
 SKILL_NAMES = [
     "Overall", "Attack", "Defence", "Strength", "Hitpoints", "Ranged",
@@ -65,6 +67,26 @@ FALLBACK_COMPARE_PLAYER_NAMES = [
 DEFAULT_PLAYER = "tibble49"
 
 
+def load_dead_hcim_players() -> set[str]:
+    try:
+        if not os.path.exists(DEAD_HCIM_FILE):
+            return set()
+        with open(DEAD_HCIM_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict):
+            return set()
+        players = payload.get("players", [])
+        if not isinstance(players, list):
+            return set()
+        return {
+            str(name).strip().lower()
+            for name in players
+            if str(name).strip()
+        }
+    except Exception:
+        return set()
+
+
 def ensure_seed_db() -> None:
     if is_postgres_url(get_database_url()):
         return
@@ -96,6 +118,7 @@ def get_players() -> list[dict]:
     mode_labels = {
         "hardcore_ironman": "HCIM",
     }
+    dead_hcim_players = load_dead_hcim_players()
 
     try:
         with get_conn() as conn:
@@ -113,6 +136,9 @@ def get_players() -> list[dict]:
             value = f"{normalized_player}|{mode}"
 
             if not normalized_player or value in seen_values:
+                continue
+
+            if mode == ANCHOR_MODE and normalized_player in dead_hcim_players:
                 continue
 
             seen_values.add(value)
@@ -399,6 +425,18 @@ def get_latest_skill_ranks(skill: str) -> list[dict]:
         df["mode"] = df["mode"].fillna("regular").astype(str).str.strip().str.lower()
         df["rank"] = pd.to_numeric(df["rank"], errors="coerce")
         df = df.dropna(subset=["rank"])
+        dead_hcim_players = load_dead_hcim_players()
+        if dead_hcim_players:
+            df = df[
+                ~(
+                    (df["mode"] == ANCHOR_MODE)
+                    & (df["player"].str.lower().isin(dead_hcim_players))
+                )
+            ]
+
+        if df.empty:
+            return []
+
         df["rank"] = df["rank"].astype(int)
         df = df.sort_values("rank").drop_duplicates(subset=["player", "mode"], keep="first")
         return df.to_dict("records")

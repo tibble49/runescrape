@@ -13,6 +13,7 @@ Examples:
 """
 
 import argparse
+import json
 import os
 import shutil
 import requests
@@ -32,6 +33,7 @@ from db import (
 
 DB_FILE = os.getenv("OSRS_DB_PATH", "osrs_hiscores.db")
 SEED_DB_FILE = os.getenv("OSRS_SEED_DB_PATH", "seed/osrs_hiscores_seed.sqlite3")
+DEAD_HCIM_FILE = os.getenv("OSRS_DEAD_HCIM_PATH", "assets/dead_hcim_players.json")
 
 # All available game mode API endpoints
 GAME_MODES = {
@@ -138,6 +140,39 @@ class OverallTableParser(HTMLParser):
     def handle_data(self, data):
         if self._in_td and data:
             self._current_td += data
+
+
+def load_dead_hcim_players() -> set[str]:
+    try:
+        if not os.path.exists(DEAD_HCIM_FILE):
+            return set()
+        with open(DEAD_HCIM_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict):
+            return set()
+        players = payload.get("players", [])
+        if not isinstance(players, list):
+            return set()
+        return {
+            str(name).strip().lower()
+            for name in players
+            if str(name).strip()
+        }
+    except Exception:
+        return set()
+
+
+def save_dead_hcim_players(players: set[str]) -> None:
+    parent = os.path.dirname(DEAD_HCIM_FILE)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+    payload = {
+        "players": sorted(players),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    with open(DEAD_HCIM_FILE, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
 
 
 def ensure_seed_db() -> None:
@@ -265,6 +300,7 @@ def get_neighbor_players(
 
 def build_default_entries() -> list[tuple[str, str]]:
     entries = BASE_TRACKED_ENTRIES.copy()
+    dead_hcim_players = load_dead_hcim_players()
 
     for skill in SKILL_NAMES:
         neighbors = get_neighbor_players(
@@ -291,6 +327,8 @@ def build_default_entries() -> list[tuple[str, str]]:
     seen: set[tuple[str, str]] = set()
     for player, mode in entries:
         key = (player.lower(), mode)
+        if mode == ANCHOR_MODE and player.lower() in dead_hcim_players:
+            continue
         if key in seen:
             continue
         seen.add(key)
@@ -377,19 +415,41 @@ def collect(entries: list[tuple[str, str]]):
     ensure_seed_db()
     engine = get_engine()
     init_db(engine)
+    dead_hcim_players = load_dead_hcim_players()
+    dead_hcim_changed = False
 
     for player, mode in entries:
+        normalized_player = player.lower()
+        if mode == ANCHOR_MODE and normalized_player in dead_hcim_players:
+            print(f"Skipping {player} ({mode}) — marked dead/removed from HCIM hiscores.")
+            continue
+
         label = f"{player} ({mode})"
         print(f"Fetching {label}...", end=" ")
         try:
             lines = fetch_raw(player, mode)
+
+            if mode == ANCHOR_MODE and normalized_player in dead_hcim_players:
+                dead_hcim_players.discard(normalized_player)
+                dead_hcim_changed = True
+
             snap_id = store_snapshot(engine, player, mode, lines)
             overall = lines[0].split(",") if lines else ["?", "?", "?"]
             level = overall[1] if len(overall) > 1 else "?"
             xp    = overall[2] if len(overall) > 2 else "?"
             print(f"OK (snapshot #{snap_id}, total level {level}, xp {xp})")
         except Exception as e:
+            if mode == ANCHOR_MODE and "not found" in str(e).lower():
+                if normalized_player not in dead_hcim_players:
+                    dead_hcim_players.add(normalized_player)
+                    dead_hcim_changed = True
+                print("SKIPPED — missing from HCIM hiscores (likely dead/de-ranked).")
+                continue
             print(f"FAILED — {e}")
+
+    if dead_hcim_changed:
+        save_dead_hcim_players(dead_hcim_players)
+        print(f"Updated dead HCIM list: {len(dead_hcim_players)} players in {DEAD_HCIM_FILE}.")
 
 
 def main():
