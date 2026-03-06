@@ -17,9 +17,10 @@ import json
 import os
 import shutil
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from html.parser import HTMLParser
 from sqlalchemy import insert
+from sqlalchemy import text
 
 from db import (
     get_engine,
@@ -82,6 +83,7 @@ ANCHOR_PLAYER = "XESPIS"
 ANCHOR_MODE = "hardcore_ironman"
 TRACK_AHEAD_COUNT = 10
 TRACK_BEHIND_COUNT = 3
+INACTIVE_DAYS_LIMIT = 30
 
 BASE_TRACKED_ENTRIES = [
     ("tibble49", "regular"),
@@ -173,6 +175,36 @@ def save_dead_hcim_players(players: set[str]) -> None:
     }
     with open(DEAD_HCIM_FILE, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
+
+
+def has_no_recent_xp_movement(engine, player: str, mode: str, days: int = INACTIVE_DAYS_LIMIT) -> bool:
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff_iso = cutoff_dt.isoformat()
+
+    with engine.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT sd.xp
+            FROM skill_data sd
+            JOIN snapshots s ON s.id = sd.snapshot_id
+            WHERE s.player = :player
+              AND s.mode = :mode
+              AND sd.skill = 'Overall'
+              AND sd.xp IS NOT NULL
+              AND s.timestamp >= :cutoff
+            ORDER BY s.timestamp
+        """), {"player": player.lower(), "mode": mode, "cutoff": cutoff_iso}).fetchall()
+
+    xp_values: list[int] = []
+    for row in rows:
+        try:
+            xp_values.append(int(row[0]))
+        except (TypeError, ValueError):
+            continue
+
+    if len(xp_values) < 2:
+        return False
+
+    return min(xp_values) == max(xp_values)
 
 
 def ensure_seed_db() -> None:
@@ -410,7 +442,7 @@ def store_snapshot(engine, player: str, mode: str, lines: list[str]):
     return snap_id
 
 
-def collect(entries: list[tuple[str, str]]):
+def collect(entries: list[tuple[str, str]], skip_inactive: bool = False):
     """entries: list of (player_name, game_mode) tuples"""
     ensure_seed_db()
     engine = get_engine()
@@ -422,6 +454,10 @@ def collect(entries: list[tuple[str, str]]):
         normalized_player = player.lower()
         if mode == ANCHOR_MODE and normalized_player in dead_hcim_players:
             print(f"Skipping {player} ({mode}) — marked dead/removed from HCIM hiscores.")
+            continue
+
+        if skip_inactive and has_no_recent_xp_movement(engine, player, mode):
+            print(f"Skipping {player} ({mode}) — no Overall XP movement in last {INACTIVE_DAYS_LIMIT} days.")
             continue
 
         label = f"{player} ({mode})"
@@ -496,7 +532,7 @@ Available modes:
             print(f"Valid modes: {', '.join(GAME_MODES.keys())}")
             return
 
-    collect(entries)
+    collect(entries, skip_inactive=not args.players)
 
 
 if __name__ == "__main__":

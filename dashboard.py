@@ -16,7 +16,7 @@ from plotly.subplots import make_subplots
 from sqlalchemy import text
 import dash
 from dash import dcc, html, Input, Output, State, callback
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 from db import get_engine, get_database_url, init_db, is_postgres_url
 
@@ -59,6 +59,7 @@ DISPLAY_AHEAD_COUNT = 3
 DISPLAY_BEHIND_COUNT = 3
 OVERALL_OUTLIER_XP_LIMIT = 5_000_000
 SKILL_OUTLIER_XP_LIMIT = 1_000_000
+INACTIVE_DAYS_LIMIT = 30
 
 FALLBACK_COMPARE_PLAYER_NAMES = [
     "XESPIS",
@@ -574,6 +575,62 @@ def filter_compare_outliers(skill: str, compare_players: list[dict]) -> list[dic
     return filtered or [anchor_entry]
 
 
+def has_recent_skill_xp_movement(player: str, mode: str, skill: str, days: int = INACTIVE_DAYS_LIMIT) -> bool:
+    if skill not in SKILL_NAMES:
+        return False
+
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff_iso = cutoff_dt.isoformat()
+
+    try:
+        with get_conn() as conn:
+            rows = conn.execute(text("""
+                SELECT sd.xp
+                FROM skill_data sd
+                JOIN snapshots s ON s.id = sd.snapshot_id
+                WHERE s.player = :player
+                  AND s.mode = :mode
+                  AND sd.skill = :skill
+                  AND sd.xp IS NOT NULL
+                  AND s.timestamp >= :cutoff
+                ORDER BY s.timestamp
+            """), {
+                "player": player.lower(),
+                "mode": mode,
+                "skill": skill,
+                "cutoff": cutoff_iso,
+            }).fetchall()
+    except Exception:
+        return True
+
+    xp_values: list[int] = []
+    for row in rows:
+        try:
+            xp_values.append(int(row[0]))
+        except (TypeError, ValueError):
+            continue
+
+    if len(xp_values) < 2:
+        return False
+
+    return min(xp_values) != max(xp_values)
+
+
+def filter_inactive_compare_players(skill: str, compare_players: list[dict]) -> list[dict]:
+    if not compare_players:
+        return compare_players
+
+    filtered: list[dict] = []
+    for player_cfg in compare_players:
+        player, mode = parse_player_value(player_cfg.get("value", ""))
+        if not player:
+            continue
+        if has_recent_skill_xp_movement(player, mode, skill):
+            filtered.append(player_cfg)
+
+    return filtered
+
+
 def make_multi_player_xp_trend(skill: str, fixed_players: list[dict]) -> go.Figure:
     fig = go.Figure()
 
@@ -869,7 +926,7 @@ def compare_page_layout():
                 )
             ]),
             html.Div(
-                "Stored tracking (collector): 10 ahead + XESPIS + 3 behind for Overall and each skill. Display: 3 ahead + XESPIS + 3 behind per skill, excluding outliers (>5M Overall, >1M skill XP from XESPIS).",
+                "Stored tracking (collector): 10 ahead + XESPIS + 3 behind for Overall and each skill. Display: 3 ahead + XESPIS + 3 behind per skill, excluding outliers (>5M Overall, >1M skill XP from XESPIS) and no-movement players (30 days).",
                 style={"color": TEXT_DIM, "fontSize": "12px", "fontFamily": "monospace", "maxWidth": "640px"}
             ),
         ], style={
@@ -1044,6 +1101,8 @@ def update_compare_chart(skill):
     overall_players = get_anchor_group("Overall", DISPLAY_AHEAD_COUNT, DISPLAY_BEHIND_COUNT)
     selected_players = filter_compare_outliers(selected_skill, selected_players)
     overall_players = filter_compare_outliers("Overall", overall_players)
+    selected_players = filter_inactive_compare_players(selected_skill, selected_players)
+    overall_players = filter_inactive_compare_players("Overall", overall_players)
     selected_skill_figure = make_multi_player_xp_trend(selected_skill, selected_players)
     overall_figure = make_multi_player_xp_trend("Overall", overall_players)
     return selected_skill_figure, overall_figure
