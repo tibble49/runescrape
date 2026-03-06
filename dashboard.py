@@ -53,8 +53,6 @@ RED = "#f44336"
 
 ANCHOR_PLAYER = "XESPIS"
 ANCHOR_MODE = "hardcore_ironman"
-TRACK_AHEAD_COUNT = 10
-TRACK_BEHIND_COUNT = 3
 DISPLAY_AHEAD_COUNT = 3
 DISPLAY_BEHIND_COUNT = 3
 
@@ -369,7 +367,10 @@ def get_fixed_compare_players() -> list[dict]:
     return resolved
 
 
-def get_latest_overall_ranks() -> list[dict]:
+def get_latest_skill_ranks(skill: str) -> list[dict]:
+    if skill not in SKILL_NAMES:
+        return []
+
     try:
         with get_conn() as conn:
             df = pd.read_sql_query(text("""
@@ -386,8 +387,8 @@ def get_latest_overall_ranks() -> list[dict]:
                  AND l.max_ts = s.timestamp
                 JOIN skill_data sd
                   ON sd.snapshot_id = s.id
-                WHERE sd.skill = 'Overall' AND sd.rank IS NOT NULL
-            """), conn)
+                                WHERE sd.skill = :skill AND sd.rank IS NOT NULL
+                        """), conn, params={"skill": skill})
 
         if df.empty:
             return []
@@ -423,21 +424,17 @@ def _to_compare_payload(rows: list[dict]) -> list[dict]:
     return payload
 
 
-def get_anchor_groups() -> tuple[list[dict], list[dict]]:
-    """
-    Returns:
-      tracked_players: 10 ahead + anchor + 3 behind
-      overall_display_players: 3 ahead + anchor + 3 behind
-    """
-    rows = get_latest_overall_ranks()
+def get_anchor_group(skill: str, ahead_count: int, behind_count: int) -> list[dict]:
+    """Returns N ahead + anchor + M behind for the anchor mode and skill."""
+    rows = get_latest_skill_ranks(skill)
     if not rows:
         fallback = get_fixed_compare_players()
-        return fallback, fallback
+        return fallback
 
     anchor_candidates = [row for row in rows if str(row["player"]).lower() == ANCHOR_PLAYER.lower()]
     if not anchor_candidates:
         fallback = get_fixed_compare_players()
-        return fallback, fallback
+        return fallback
 
     anchor = next((row for row in anchor_candidates if row["mode"] == ANCHOR_MODE), anchor_candidates[0])
     anchor_mode = anchor["mode"]
@@ -454,24 +451,18 @@ def get_anchor_groups() -> tuple[list[dict], list[dict]]:
         key=lambda row: int(row["rank"]),
     )
 
-    tracked_rows = sorted(
-        ahead[:TRACK_AHEAD_COUNT] + [anchor] + behind[:TRACK_BEHIND_COUNT],
-        key=lambda row: int(row["rank"]),
-    )
-    display_rows = sorted(
-        ahead[:DISPLAY_AHEAD_COUNT] + [anchor] + behind[:DISPLAY_BEHIND_COUNT],
+    group_rows = sorted(
+        ahead[:ahead_count] + [anchor] + behind[:behind_count],
         key=lambda row: int(row["rank"]),
     )
 
-    tracked_players = _to_compare_payload(tracked_rows)
-    overall_display_players = _to_compare_payload(display_rows)
+    group_players = _to_compare_payload(group_rows)
 
     # If dynamic set is too small, use historical fixed players fallback.
-    if len(tracked_players) < 3:
-        fallback = get_fixed_compare_players()
-        return fallback, fallback
+    if len(group_players) < 3:
+        return get_fixed_compare_players()
 
-    return tracked_players, overall_display_players
+    return group_players
 
 
 def make_multi_player_xp_trend(skill: str, fixed_players: list[dict]) -> go.Figure:
@@ -769,7 +760,7 @@ def compare_page_layout():
                 )
             ]),
             html.Div(
-                "Tracking (HCIM): 10 ahead + XESPIS + 3 behind. Overall display: 3 ahead + XESPIS + 3 behind.",
+                "Stored tracking (collector): 10 ahead + XESPIS + 3 behind for Overall and each skill. Display: 3 ahead + XESPIS + 3 behind per skill.",
                 style={"color": TEXT_DIM, "fontSize": "12px", "fontFamily": "monospace", "maxWidth": "640px"}
             ),
         ], style={
@@ -939,10 +930,11 @@ def update_overview_charts(player_value):
     Input("compare-skill-dropdown", "value"),
 )
 def update_compare_chart(skill):
-    tracked_players, overall_display_players = get_anchor_groups()
-    selected_players = overall_display_players if skill == "Overall" else tracked_players
-    selected_skill_figure = make_multi_player_xp_trend(skill, selected_players)
-    overall_figure = make_multi_player_xp_trend("Overall", overall_display_players)
+    selected_skill = skill if skill in SKILL_NAMES else "Overall"
+    selected_players = get_anchor_group(selected_skill, DISPLAY_AHEAD_COUNT, DISPLAY_BEHIND_COUNT)
+    overall_players = get_anchor_group("Overall", DISPLAY_AHEAD_COUNT, DISPLAY_BEHIND_COUNT)
+    selected_skill_figure = make_multi_player_xp_trend(selected_skill, selected_players)
+    overall_figure = make_multi_player_xp_trend("Overall", overall_players)
     return selected_skill_figure, overall_figure
 
 

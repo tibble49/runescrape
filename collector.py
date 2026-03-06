@@ -95,6 +95,8 @@ HISCORE_OVERALL_PAGES = {
     "seasonal": "https://secure.runescape.com/m=hiscore_oldschool_seasonal/overall",
 }
 
+SKILL_TABLE_IDS = {skill: index for index, skill in enumerate(SKILL_NAMES)}
+
 
 class OverallTableParser(HTMLParser):
     def __init__(self):
@@ -163,7 +165,7 @@ def fetch_raw(player: str, mode: str) -> list[str]:
     return resp.text.strip().splitlines()
 
 
-def get_overall_rank(player: str, mode: str = "regular") -> int | None:
+def get_skill_rank(player: str, skill: str, mode: str = "regular") -> int | None:
     try:
         lines = fetch_raw(player, mode)
     except Exception:
@@ -172,18 +174,26 @@ def get_overall_rank(player: str, mode: str = "regular") -> int | None:
     if not lines:
         return None
 
-    parts = lines[0].split(",")
+    try:
+        skill_index = SKILL_NAMES.index(skill)
+    except ValueError:
+        return None
+
+    if skill_index >= len(lines):
+        return None
+
+    parts = lines[skill_index].split(",")
     if not parts:
         return None
 
     return parse_int(parts[0])
 
 
-def fetch_overall_page_rows(page: int, mode: str) -> list[tuple[int, str]]:
+def fetch_hiscore_table_rows(page: int, mode: str, table_id: int) -> list[tuple[int, str]]:
     url = HISCORE_OVERALL_PAGES.get(mode, HISCORE_OVERALL_PAGES["regular"])
     resp = requests.get(
         url,
-        params={"table": 0, "page": page},
+        params={"table": table_id, "page": page},
         headers={"User-Agent": "Mozilla/5.0"},
         timeout=12,
     )
@@ -194,9 +204,19 @@ def fetch_overall_page_rows(page: int, mode: str) -> list[tuple[int, str]]:
     return parser.rows
 
 
-def get_neighbor_players(anchor_player: str, ahead_count: int, behind_count: int, mode: str = ANCHOR_MODE) -> list[str]:
-    anchor_rank = get_overall_rank(anchor_player, mode)
+def get_neighbor_players(
+    anchor_player: str,
+    ahead_count: int,
+    behind_count: int,
+    mode: str = ANCHOR_MODE,
+    skill: str = "Overall",
+) -> list[str]:
+    anchor_rank = get_skill_rank(anchor_player, skill, mode)
     if not anchor_rank:
+        return []
+
+    table_id = SKILL_TABLE_IDS.get(skill)
+    if table_id is None:
         return []
 
     start_rank = max(1, anchor_rank - ahead_count)
@@ -217,7 +237,7 @@ def get_neighbor_players(anchor_player: str, ahead_count: int, behind_count: int
 
     for page in candidate_pages:
         try:
-            rows = fetch_overall_page_rows(page, mode)
+            rows = fetch_hiscore_table_rows(page, mode, table_id)
         except Exception:
             continue
 
@@ -245,16 +265,27 @@ def get_neighbor_players(anchor_player: str, ahead_count: int, behind_count: int
 
 def build_default_entries() -> list[tuple[str, str]]:
     entries = BASE_TRACKED_ENTRIES.copy()
-    neighbors = get_neighbor_players(ANCHOR_PLAYER, TRACK_AHEAD_COUNT, TRACK_BEHIND_COUNT, ANCHOR_MODE)
 
-    if neighbors:
-        entries.extend((name, ANCHOR_MODE) for name in neighbors)
-        print(
-            f"Resolved neighbors around {ANCHOR_PLAYER}: {len(neighbors)} players "
-            f"(target {TRACK_AHEAD_COUNT + TRACK_BEHIND_COUNT + 1})."
+    for skill in SKILL_NAMES:
+        neighbors = get_neighbor_players(
+            ANCHOR_PLAYER,
+            TRACK_AHEAD_COUNT,
+            TRACK_BEHIND_COUNT,
+            ANCHOR_MODE,
+            skill,
         )
-    else:
-        print("WARNING: Could not resolve XESPIS neighbors from overall hiscores; collecting base entries only.")
+
+        if neighbors:
+            entries.extend((name, ANCHOR_MODE) for name in neighbors)
+            print(
+                f"Resolved {skill} neighbors around {ANCHOR_PLAYER}: {len(neighbors)} players "
+                f"(target {TRACK_AHEAD_COUNT + TRACK_BEHIND_COUNT + 1})."
+            )
+        else:
+            print(
+                f"WARNING: Could not resolve {skill} neighbors for {ANCHOR_PLAYER}; "
+                "continuing with other skills."
+            )
 
     deduped: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -387,7 +418,7 @@ Available modes:
     if not args.players:
         entries = build_default_entries()
         print(
-            f"Default tracking set: {TRACK_AHEAD_COUNT} ahead + {TRACK_BEHIND_COUNT} behind {ANCHOR_PLAYER} "
+            f"Default tracking set from Overall + all skills: {TRACK_AHEAD_COUNT} ahead + {TRACK_BEHIND_COUNT} behind {ANCHOR_PLAYER} "
             f"(total {len(entries)} players/modes)."
         )
     else:
