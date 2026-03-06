@@ -55,6 +55,8 @@ ANCHOR_PLAYER = "XESPIS"
 ANCHOR_MODE = "hardcore_ironman"
 DISPLAY_AHEAD_COUNT = 3
 DISPLAY_BEHIND_COUNT = 3
+OVERALL_OUTLIER_XP_LIMIT = 5_000_000
+SKILL_OUTLIER_XP_LIMIT = 1_000_000
 
 FALLBACK_COMPARE_PLAYER_NAMES = [
     "XESPIS",
@@ -465,6 +467,75 @@ def get_anchor_group(skill: str, ahead_count: int, behind_count: int) -> list[di
     return group_players
 
 
+def get_latest_skill_xp_for_player(player: str, mode: str, skill: str) -> int | None:
+    if skill not in SKILL_NAMES:
+        return None
+
+    try:
+        with get_conn() as conn:
+            row = conn.execute(text("""
+                SELECT sd.xp
+                FROM skill_data sd
+                JOIN snapshots s ON s.id = sd.snapshot_id
+                WHERE s.player = :player
+                  AND s.mode = :mode
+                  AND sd.skill = :skill
+                  AND sd.xp IS NOT NULL
+                ORDER BY s.timestamp DESC
+                LIMIT 1
+            """), {"player": player.lower(), "mode": mode, "skill": skill}).fetchone()
+    except Exception:
+        return None
+
+    if not row or row[0] is None:
+        return None
+
+    try:
+        return int(row[0])
+    except (TypeError, ValueError):
+        return None
+
+
+def filter_compare_outliers(skill: str, compare_players: list[dict]) -> list[dict]:
+    if not compare_players:
+        return compare_players
+
+    threshold = OVERALL_OUTLIER_XP_LIMIT if skill == "Overall" else SKILL_OUTLIER_XP_LIMIT
+    anchor_entry = next(
+        (
+            p for p in compare_players
+            if parse_player_value(p.get("value", ""))[0].lower() == ANCHOR_PLAYER.lower()
+            and parse_player_value(p.get("value", ""))[1] == ANCHOR_MODE
+        ),
+        None,
+    )
+
+    if not anchor_entry:
+        return compare_players
+
+    anchor_player, anchor_mode = parse_player_value(anchor_entry["value"])
+    anchor_xp = get_latest_skill_xp_for_player(anchor_player, anchor_mode, skill)
+    if anchor_xp is None:
+        return compare_players
+
+    filtered: list[dict] = []
+    for player_cfg in compare_players:
+        player, mode = parse_player_value(player_cfg.get("value", ""))
+        if player.lower() == ANCHOR_PLAYER.lower() and mode == ANCHOR_MODE:
+            filtered.append(player_cfg)
+            continue
+
+        xp = get_latest_skill_xp_for_player(player, mode, skill)
+        if xp is None:
+            filtered.append(player_cfg)
+            continue
+
+        if abs(xp - anchor_xp) <= threshold:
+            filtered.append(player_cfg)
+
+    return filtered or [anchor_entry]
+
+
 def make_multi_player_xp_trend(skill: str, fixed_players: list[dict]) -> go.Figure:
     fig = go.Figure()
 
@@ -760,7 +831,7 @@ def compare_page_layout():
                 )
             ]),
             html.Div(
-                "Stored tracking (collector): 10 ahead + XESPIS + 3 behind for Overall and each skill. Display: 3 ahead + XESPIS + 3 behind per skill.",
+                "Stored tracking (collector): 10 ahead + XESPIS + 3 behind for Overall and each skill. Display: 3 ahead + XESPIS + 3 behind per skill, excluding outliers (>5M Overall, >1M skill XP from XESPIS).",
                 style={"color": TEXT_DIM, "fontSize": "12px", "fontFamily": "monospace", "maxWidth": "640px"}
             ),
         ], style={
@@ -933,6 +1004,8 @@ def update_compare_chart(skill):
     selected_skill = skill if skill in SKILL_NAMES else "Overall"
     selected_players = get_anchor_group(selected_skill, DISPLAY_AHEAD_COUNT, DISPLAY_BEHIND_COUNT)
     overall_players = get_anchor_group("Overall", DISPLAY_AHEAD_COUNT, DISPLAY_BEHIND_COUNT)
+    selected_players = filter_compare_outliers(selected_skill, selected_players)
+    overall_players = filter_compare_outliers("Overall", overall_players)
     selected_skill_figure = make_multi_player_xp_trend(selected_skill, selected_players)
     overall_figure = make_multi_player_xp_trend("Overall", overall_players)
     return selected_skill_figure, overall_figure
