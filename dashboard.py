@@ -230,6 +230,44 @@ def get_first_last_dates(player: str, mode: str = "regular") -> tuple[str | None
     return row[0], row[1]
 
 
+def get_7d_avg_daily_overall_xp_gain(player: str, mode: str = "regular") -> int | None:
+    """Returns 7-day average daily XP gain for Overall, based on latest available data."""
+    hist = get_skill_history(player, "Overall", mode)
+    if hist.empty or len(hist) < 2:
+        return None
+
+    df = hist.dropna(subset=["xp", "timestamp"]).copy()
+    if df.empty or len(df) < 2:
+        return None
+
+    latest_ts = df["timestamp"].iloc[-1]
+    latest_xp = int(df["xp"].iloc[-1])
+    window_start = latest_ts - pd.Timedelta(days=7)
+
+    # Prefer the last point at or before the 7-day window to capture gain across the full span.
+    before_or_at = df[df["timestamp"] <= window_start]
+    if not before_or_at.empty:
+        base_row = before_or_at.iloc[-1]
+    else:
+        within_window = df[df["timestamp"] >= window_start]
+        if within_window.empty:
+            return None
+        base_row = within_window.iloc[0]
+
+    base_ts = base_row["timestamp"]
+    base_xp = int(base_row["xp"])
+
+    elapsed_days = (latest_ts - base_ts).total_seconds() / 86400
+    if elapsed_days <= 0:
+        return None
+
+    gained_xp = latest_xp - base_xp
+    if gained_xp < 0:
+        return None
+
+    return int(round(gained_xp / elapsed_days))
+
+
 # ── chart builders ────────────────────────────────────────────────────────────
 
 def make_xp_trend(player: str, skill: str, mode: str = "regular") -> go.Figure:
@@ -748,12 +786,23 @@ def _style_fig(fig: go.Figure, title: str):
     )
 
 
-def stat_card(label: str, value: str, delta: str = "", delta_positive: bool = True):
+def stat_card(
+    label: str,
+    value: str,
+    delta: str = "",
+    delta_positive: bool = True,
+    tooltip: str | None = None,
+):
     delta_color = GREEN if delta_positive else RED
+    label_content = (
+        html.Abbr(label, title=tooltip, style={"textDecoration": "underline dotted", "cursor": "help"})
+        if tooltip
+        else label
+    )
     return html.Div([
-        html.Div(label, style={"color": TEXT_DIM, "fontSize": "11px",
-                               "textTransform": "uppercase", "letterSpacing": "1.5px",
-                               "marginBottom": "6px", "fontFamily": "Georgia, serif"}),
+        html.Div(label_content, style={"color": TEXT_DIM, "fontSize": "11px",
+                                       "textTransform": "uppercase", "letterSpacing": "1.5px",
+                                       "marginBottom": "6px", "fontFamily": "Georgia, serif"}),
         html.Div(value, style={"color": ACCENT, "fontSize": "26px",
                                "fontWeight": "bold", "fontFamily": "Georgia, serif",
                                "lineHeight": "1"}),
@@ -1053,10 +1102,17 @@ def update_stat_cards(player_value, skill):
     overall_row = df_latest[df_latest["skill"] == "Overall"]
     total_level = int(overall_row["level"].iloc[0]) if not overall_row.empty and pd.notna(overall_row["level"].iloc[0]) else "—"
     total_xp    = int(overall_row["xp"].iloc[0])    if not overall_row.empty and pd.notna(overall_row["xp"].iloc[0])    else "—"
+    avg_daily_7d = get_7d_avg_daily_overall_xp_gain(player, mode)
+    avg_daily_7d_display = f"{avg_daily_7d:,}" if isinstance(avg_daily_7d, int) else "—"
 
     cards = [
         stat_card("Total Level",    f"{total_level:,}" if isinstance(total_level, int) else total_level),
         stat_card("Total XP",       f"{total_xp:,}"    if isinstance(total_xp, int)    else total_xp),
+        stat_card(
+            "7D Avg XP/Day",
+            avg_daily_7d_display,
+            tooltip="Overall XP gained over the latest 7-day window divided by elapsed days between snapshots.",
+        ),
         stat_card(f"{skill} Level", f"{level}"         if isinstance(level, int)        else level),
         stat_card(f"{skill} XP",    f"{xp:,}"          if isinstance(xp, int)           else xp,
                   delta=xp_gained, delta_positive=True),
