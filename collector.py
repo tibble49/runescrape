@@ -277,6 +277,11 @@ def get_neighbor_players(
     behind_count: int,
     mode: str = ANCHOR_MODE,
     skill: str = "Overall",
+    excluded_players: set[str] | None = None,
+    engine=None,
+    skip_inactive: bool = False,
+    inactive_cache: dict[tuple[str, str], bool] | None = None,
+    max_expand_pages: int = 8,
 ) -> list[str]:
     anchor_rank = get_skill_rank(anchor_player, skill, mode)
     if not anchor_rank:
@@ -286,46 +291,94 @@ def get_neighbor_players(
     if table_id is None:
         return []
 
+    excluded = {p.lower() for p in (excluded_players or set())}
+    anchor_lower = anchor_player.lower()
     start_rank = max(1, anchor_rank - ahead_count)
     end_rank = anchor_rank + behind_count
-
-    # OSRS hiscore UI commonly uses page=1 for ranks 1-25 (page=0 can mirror first page).
-    page_start = max(1, ((start_rank - 1) // 25) + 1)
-    page_end = max(1, ((end_rank - 1) // 25) + 1)
-    candidate_pages: list[int] = []
-
-    for page_index in range(max(1, page_start - 1), page_end + 2):
-        for candidate in (page_index - 1, page_index, page_index + 1):
-            if candidate >= 0 and candidate not in candidate_pages:
-                candidate_pages.append(candidate)
-
     rank_to_player: dict[int, str] = {}
-    required_ranks = set(range(start_rank, end_rank + 1))
+    fetched_pages: set[int] = set()
 
-    for page in candidate_pages:
-        try:
-            rows = fetch_hiscore_table_rows(page, mode, table_id)
-        except Exception:
-            continue
+    def _is_inactive(player_name: str) -> bool:
+        if not skip_inactive or engine is None:
+            return False
+        key = (player_name.lower(), mode)
+        if inactive_cache is not None and key in inactive_cache:
+            return inactive_cache[key]
+        inactive = has_no_recent_xp_movement(engine, player_name, mode)
+        if inactive_cache is not None:
+            inactive_cache[key] = inactive
+        return inactive
 
-        for rank, player_name in rows:
-            if start_rank <= rank <= end_rank and player_name:
-                rank_to_player[rank] = player_name
+    def _fetch_window(window_start: int, window_end: int) -> None:
+        page_start = max(1, ((window_start - 1) // 25) + 1)
+        page_end = max(1, ((window_end - 1) // 25) + 1)
+        candidate_pages: list[int] = []
 
-        if required_ranks.issubset(rank_to_player.keys()):
+        # OSRS hiscore UI commonly uses page=1 for ranks 1-25 (page=0 can mirror first page).
+        for page_index in range(max(1, page_start - 1), page_end + 2):
+            for candidate in (page_index - 1, page_index, page_index + 1):
+                if candidate >= 0 and candidate not in candidate_pages:
+                    candidate_pages.append(candidate)
+
+        for page in candidate_pages:
+            if page in fetched_pages:
+                continue
+            fetched_pages.add(page)
+            try:
+                rows = fetch_hiscore_table_rows(page, mode, table_id)
+            except Exception:
+                continue
+
+            for rank, player_name in rows:
+                if window_start <= rank <= window_end and player_name:
+                    rank_to_player[rank] = player_name
+
+    chosen_ahead: list[tuple[int, str]] = []
+    chosen_behind: list[tuple[int, str]] = []
+    expand_pages = 0
+    while True:
+        window_start = max(1, start_rank - expand_pages * 25)
+        window_end = end_rank + expand_pages * 25
+        _fetch_window(window_start, window_end)
+
+        ahead_candidates: list[tuple[int, str]] = []
+        behind_candidates: list[tuple[int, str]] = []
+        seen_names: set[str] = set()
+
+        for rank in sorted(rank_to_player.keys()):
+            player_name = rank_to_player[rank]
+            player_lower = player_name.lower()
+            if player_lower in seen_names:
+                continue
+            seen_names.add(player_lower)
+
+            if player_lower == anchor_lower or player_lower in excluded:
+                continue
+            if _is_inactive(player_name):
+                continue
+
+            if rank < anchor_rank:
+                ahead_candidates.append((rank, player_name))
+            elif rank > anchor_rank:
+                behind_candidates.append((rank, player_name))
+
+        chosen_ahead = ahead_candidates[-ahead_count:]
+        chosen_behind = behind_candidates[:behind_count]
+
+        enough_ahead = len(chosen_ahead) >= ahead_count
+        enough_behind = len(chosen_behind) >= behind_count
+        if enough_ahead and enough_behind:
             break
+        if expand_pages >= max_expand_pages:
+            break
+        expand_pages += 1
 
     if not rank_to_player:
         return []
 
-    ordered_names: list[str] = []
-    for rank in range(start_rank, end_rank + 1):
-        name = rank_to_player.get(rank)
-        if name and name.lower() not in {n.lower() for n in ordered_names}:
-            ordered_names.append(name)
-
-    if anchor_player.lower() not in {name.lower() for name in ordered_names}:
-        ordered_names.append(anchor_player)
+    ordered_names = [name for _, name in chosen_ahead]
+    ordered_names.append(anchor_player)
+    ordered_names.extend(name for _, name in chosen_behind)
 
     return ordered_names
 
@@ -333,6 +386,9 @@ def get_neighbor_players(
 def build_default_entries() -> list[tuple[str, str]]:
     entries = BASE_TRACKED_ENTRIES.copy()
     dead_hcim_players = load_dead_hcim_players()
+    engine = get_engine()
+    init_db(engine)
+    inactive_cache: dict[tuple[str, str], bool] = {}
 
     for skill in SKILL_NAMES:
         neighbors = get_neighbor_players(
@@ -341,6 +397,10 @@ def build_default_entries() -> list[tuple[str, str]]:
             TRACK_BEHIND_COUNT,
             ANCHOR_MODE,
             skill,
+            excluded_players=dead_hcim_players,
+            engine=engine,
+            skip_inactive=True,
+            inactive_cache=inactive_cache,
         )
 
         if neighbors:
