@@ -862,23 +862,27 @@ def main_page_layout():
         html.Div([
             dcc.Graph(id="xp-trend-chart",
                       config={"displayModeBar": False},
+                      className="chart-card",
                       style={"flex": "1", "minWidth": "0", "height": "360px"}),
             dcc.Graph(id="rank-trend-chart",
                       config={"displayModeBar": False},
+                      className="chart-card",
                       style={"flex": "1", "minWidth": "0", "height": "360px"}),
-        ], style={"display": "flex", "gap": "16px", "marginBottom": "16px"}),
+        ], className="chart-row", style={"display": "flex", "gap": "16px", "marginBottom": "16px"}),
 
         # Bottom row: skills bar + pie
         html.Div([
             dcc.Graph(id="skills-overview-chart",
                       config={"displayModeBar": False},
+                      className="chart-card",
                       style={"flex": "2", "minWidth": "0", "height": "360px"}),
             dcc.Graph(id="xp-distribution-chart",
                       config={"displayModeBar": False},
+                      className="chart-card",
                       style={"flex": "1", "minWidth": "0", "height": "360px"}),
-        ], style={"display": "flex", "gap": "16px"}),
+        ], className="chart-row", style={"display": "flex", "gap": "16px"}),
 
-    ], style={"padding": "0 32px 32px 32px"}),
+    ], className="charts-grid", style={"padding": "0 32px 32px 32px"}),
 
     # Footer hint
     html.Div(

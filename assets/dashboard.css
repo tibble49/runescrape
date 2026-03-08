@@ -42,3 +42,21 @@
   min-height: 34px;
   line-height: 34px;
 }
+
+@media (max-width: 900px) {
+  .charts-grid {
+    padding: 0 14px 20px 14px !important;
+  }
+
+  .chart-row {
+    flex-direction: column !important;
+    gap: 12px !important;
+    margin-bottom: 12px !important;
+  }
+
+  .chart-card {
+    width: 100% !important;
+    min-width: 0 !important;
+    height: 320px !important;
+  }
+}
