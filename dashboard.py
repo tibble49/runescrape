@@ -791,7 +791,7 @@ def main_page_layout():
                       style={"fontSize": "22px", "fontWeight": "bold",
                              "color": ACCENT, "fontFamily": "Georgia, serif",
                              "letterSpacing": "1px"}),
-        ], style={"display": "flex", "alignItems": "center"}),
+        ], className="top-header-left", style={"display": "flex", "alignItems": "center"}),
         html.Div([
             dcc.Link("XP Compare Page", href="/xp-compare", style={
                 "color": ACCENT,
@@ -808,8 +808,8 @@ def main_page_layout():
             }),
             html.Span(id="last-updated", style={"color": TEXT_DIM, "fontSize": "12px",
                                                  "fontFamily": "monospace"})
-        ], style={"display": "flex", "alignItems": "center"})
-    ], style={
+        ], className="top-header-right", style={"display": "flex", "alignItems": "center"})
+    ], className="top-header", style={
         "display": "flex", "justifyContent": "space-between", "alignItems": "center",
         "padding": "18px 32px", "borderBottom": f"1px solid {BORDER}",
         "background": CARD_BG
@@ -827,9 +827,10 @@ def main_page_layout():
                 options=[{"label": p["label"], "value": p["value"]} for p in players],
                 value=default_player_value,
                 clearable=False,
+                className="responsive-dropdown",
                 style={"width": "260px", "fontFamily": "Georgia, serif"},
             )
-        ]),
+        ], className="control-group"),
         html.Div([
             html.Label("Skill", style={"color": TEXT_DIM, "fontSize": "11px",
                                        "textTransform": "uppercase",
@@ -840,10 +841,11 @@ def main_page_layout():
                 options=[{"label": s, "value": s} for s in SKILL_NAMES],
                 value="Overall",
                 clearable=False,
+                className="responsive-dropdown",
                 style={"width": "200px", "fontFamily": "Georgia, serif"},
             )
-        ]),
-    ], style={
+        ], className="control-group"),
+    ], className="controls-bar", style={
         "display": "flex", "gap": "32px", "alignItems": "flex-end",
         "padding": "20px 32px", "borderBottom": f"1px solid {BORDER}",
         "background": "#10101a"
@@ -904,14 +906,14 @@ def compare_page_layout():
                     "fontSize": "22px", "fontWeight": "bold",
                     "color": ACCENT, "fontFamily": "Georgia, serif", "letterSpacing": "1px"
                 }),
-            ], style={"display": "flex", "alignItems": "center"}),
+            ], className="top-header-left", style={"display": "flex", "alignItems": "center"}),
             dcc.Link("← Back to Dashboard", href="/", style={
                 "color": ACCENT,
                 "fontSize": "12px",
                 "fontFamily": "monospace",
                 "textDecoration": "none"
             })
-        ], style={
+        ], className="top-header", style={
             "display": "flex", "justifyContent": "space-between", "alignItems": "center",
             "padding": "18px 32px", "borderBottom": f"1px solid {BORDER}", "background": CARD_BG
         }),
@@ -926,14 +928,16 @@ def compare_page_layout():
                     options=[{"label": s, "value": s} for s in SKILL_NAMES],
                     value="Sailing" if "Sailing" in SKILL_NAMES else "Overall",
                     clearable=False,
+                    className="responsive-dropdown",
                     style={"width": "220px", "fontFamily": "Georgia, serif"},
                 )
-            ]),
+            ], className="control-group"),
             html.Div(
                 "Stored tracking (collector): 10 ahead + XESPIS + 3 behind for Overall and each skill. Display: 3 ahead + XESPIS + 3 behind per skill, excluding outliers (>5M Overall, >1M skill XP from XESPIS) and no-movement players (30 days).",
+                className="compare-notes",
                 style={"color": TEXT_DIM, "fontSize": "12px", "fontFamily": "monospace", "maxWidth": "640px"}
             ),
-        ], style={
+        ], className="controls-bar", style={
             "display": "flex", "gap": "32px", "alignItems": "flex-end",
             "padding": "20px 32px", "borderBottom": f"1px solid {BORDER}", "background": "#10101a"
         }),
