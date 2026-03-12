@@ -345,6 +345,70 @@ def make_rank_trend(player: str, skill: str, mode: str = "regular") -> go.Figure
     return fig
 
 
+def make_avg_daily_xp_trend(player: str, mode: str = "regular") -> go.Figure:
+    """Shows trend of average Overall XP earned per day between snapshots."""
+    df = get_skill_history(player, "Overall", mode)
+    df_plot = df.dropna(subset=["xp", "timestamp"]).copy()
+
+    fig = go.Figure()
+
+    if df_plot.empty or len(df_plot) < 2:
+        fig.add_annotation(
+            text="Not enough data yet — run collector.py daily to build history",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(color=TEXT_DIM, size=14)
+        )
+        _style_fig(fig, f"Overall — Average XP/day trend ({player})")
+        return fig
+
+    df_plot = df_plot.sort_values("timestamp").reset_index(drop=True)
+    df_plot["prev_timestamp"] = df_plot["timestamp"].shift(1)
+    df_plot["delta_days"] = df_plot["timestamp"].diff().dt.total_seconds() / 86400
+    df_plot["delta_xp"] = df_plot["xp"].diff()
+
+    # Only keep valid forward progress intervals to avoid noisy/invalid rates.
+    df_plot = df_plot[(df_plot["delta_days"] > 0) & (df_plot["delta_xp"] >= 0)].copy()
+    if df_plot.empty:
+        fig.add_annotation(
+            text="Not enough valid intervals to calculate XP/day",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(color=TEXT_DIM, size=14)
+        )
+        _style_fig(fig, f"Overall — Average XP/day trend ({player})")
+        return fig
+
+    df_plot["xp_per_day"] = df_plot["delta_xp"] / df_plot["delta_days"]
+    # Smooth short-term spikes so the trend is easier to read.
+    df_plot["xp_per_day_ma"] = df_plot["xp_per_day"].rolling(window=3, min_periods=1).mean()
+
+    fig.add_trace(go.Scatter(
+        x=df_plot["timestamp"],
+        y=df_plot["xp_per_day"],
+        mode="lines+markers",
+        name="Interval Avg XP/day",
+        line=dict(color="#5f86ff", width=1.8),
+        marker=dict(size=5, color="#5f86ff"),
+        customdata=df_plot[["prev_timestamp"]].to_numpy(),
+        hovertemplate=(
+            "<b>%{customdata[0]|%d %b %Y %H:%M UTC} → %{x|%d %b %Y %H:%M UTC}</b>"
+            "<br>Avg XP/day: %{y:,.0f}<extra></extra>"
+        )
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=df_plot["timestamp"],
+        y=df_plot["xp_per_day_ma"],
+        mode="lines",
+        name="3-point moving average",
+        line=dict(color=ACCENT, width=2.8),
+        hovertemplate="<b>%{x|%d %b %Y %H:%M UTC}</b><br>Smoothed XP/day: %{y:,.0f}<extra></extra>"
+    ))
+
+    _style_fig(fig, f"Overall — Average XP/day trend ({player})")
+    fig.update_yaxes(title="XP/day")
+    return fig
+
+
 def make_skills_overview(player: str, mode: str = "regular") -> go.Figure:
     df = get_latest_skills(player, mode)
     if df.empty:
@@ -933,6 +997,14 @@ def main_page_layout():
                       style={"flex": "1", "minWidth": "0", "height": "360px"}),
         ], className="chart-row", style={"display": "flex", "gap": "16px"}),
 
+        # Third row: average XP/day trend
+        html.Div([
+            dcc.Graph(id="avg-xp-day-chart",
+                      config={"displayModeBar": False},
+                      className="chart-card",
+                      style={"flex": "1", "minWidth": "0", "height": "340px"}),
+        ], className="chart-row", style={"display": "flex", "gap": "16px", "marginTop": "16px"}),
+
     ], className="charts-grid", style={"padding": "0 32px 32px 32px"}),
 
     # Footer hint
@@ -1128,6 +1200,7 @@ def update_stat_cards(player_value, skill):
 @app.callback(
     Output("xp-trend-chart", "figure"),
     Output("rank-trend-chart", "figure"),
+    Output("avg-xp-day-chart", "figure"),
     Input("player-dropdown", "value"),
     Input("skill-dropdown", "value"),
 )
@@ -1135,9 +1208,13 @@ def update_trend_charts(player_value, skill):
     if not player_value or not skill:
         empty = go.Figure()
         _style_fig(empty, "")
-        return empty, empty
+        return empty, empty, empty
     player, mode = parse_player_value(player_value)
-    return make_xp_trend(player, skill, mode), make_rank_trend(player, skill, mode)
+    return (
+        make_xp_trend(player, skill, mode),
+        make_rank_trend(player, skill, mode),
+        make_avg_daily_xp_trend(player, mode),
+    )
 
 
 @app.callback(
