@@ -37,6 +37,16 @@ minigame_data_table = Table(
     Column("score", Integer),
 )
 
+quest_summary_table = Table(
+    "quest_summary",
+    metadata,
+    Column("snapshot_id", Integer, nullable=False),
+    Column("completed", Integer),
+    Column("in_progress", Integer),
+    Column("not_started", Integer),
+    Column("source", String, nullable=False, server_default="runelite_export"),
+)
+
 
 def get_database_url() -> str:
     return os.getenv("DATABASE_URL", "").strip()

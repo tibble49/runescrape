@@ -10,9 +10,12 @@ Requirements:
 import os
 import json
 import shutil
+import requests
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from functools import lru_cache
+from html.parser import HTMLParser
 from sqlalchemy import text
 import dash
 from dash import dcc, html, Input, Output, State, callback
@@ -66,6 +69,316 @@ FALLBACK_COMPARE_PLAYER_NAMES = [
 ]
 
 DEFAULT_PLAYER = "tibble49"
+
+HISCORE_LITE_ENDPOINTS = {
+    "regular": "https://secure.runescape.com/m=hiscore_oldschool/index_lite.ws",
+    "ironman": "https://secure.runescape.com/m=hiscore_oldschool_ironman/index_lite.ws",
+    "hardcore_ironman": "https://secure.runescape.com/m=hiscore_oldschool_hardcore_ironman/index_lite.ws",
+    "ultimate_ironman": "https://secure.runescape.com/m=hiscore_oldschool_ultimate/index_lite.ws",
+    "deadman": "https://secure.runescape.com/m=hiscore_oldschool_deadman/index_lite.ws",
+    "seasonal": "https://secure.runescape.com/m=hiscore_oldschool_seasonal/index_lite.ws",
+}
+
+HISCORE_TABLE_ENDPOINTS = {
+    "regular": "https://secure.runescape.com/m=hiscore_oldschool/overall",
+    "ironman": "https://secure.runescape.com/m=hiscore_oldschool_ironman/overall",
+    "hardcore_ironman": "https://secure.runescape.com/m=hiscore_oldschool_hardcore_ironman/overall",
+    "ultimate_ironman": "https://secure.runescape.com/m=hiscore_oldschool_ultimate/overall",
+    "deadman": "https://secure.runescape.com/m=hiscore_oldschool_deadman/overall",
+    "seasonal": "https://secure.runescape.com/m=hiscore_oldschool_seasonal/overall",
+}
+
+SKILL_TABLE_IDS = {skill: idx for idx, skill in enumerate(SKILL_NAMES)}
+
+
+class HiscoreTableParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.rows: list[tuple[int, str]] = []
+        self._in_tr = False
+        self._in_td = False
+        self._current_td = ""
+        self._current_row: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self._in_tr = True
+            self._current_row = []
+        elif tag == "td" and self._in_tr:
+            self._in_td = True
+            self._current_td = ""
+
+    def handle_endtag(self, tag):
+        if tag == "td" and self._in_td:
+            self._in_td = False
+            self._current_row.append(" ".join(self._current_td.split()))
+        elif tag == "tr" and self._in_tr:
+            self._in_tr = False
+            if len(self._current_row) < 3:
+                return
+
+            rank_idx = None
+            for idx, cell in enumerate(self._current_row):
+                candidate = cell.replace(",", "").strip()
+                if candidate.isdigit():
+                    rank_idx = idx
+                    break
+
+            if rank_idx is None or rank_idx + 1 >= len(self._current_row):
+                return
+
+            rank_text = self._current_row[rank_idx].replace(",", "").strip()
+            player_name = self._current_row[rank_idx + 1].strip()
+            if rank_text.isdigit() and player_name:
+                self.rows.append((int(rank_text), player_name))
+
+    def handle_data(self, data):
+        if self._in_td and data:
+            self._current_td += data
+
+
+@lru_cache(maxsize=128)
+def _fetch_hiscore_rows(mode: str, skill: str, page: int) -> list[tuple[int, str]]:
+    table_id = SKILL_TABLE_IDS.get(skill)
+    if table_id is None:
+        return []
+
+    url = HISCORE_TABLE_ENDPOINTS.get(mode, HISCORE_TABLE_ENDPOINTS["regular"])
+    resp = requests.get(
+        url,
+        params={"table": table_id, "page": page},
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=12,
+    )
+    resp.raise_for_status()
+
+    parser = HiscoreTableParser()
+    parser.feed(resp.text)
+    return parser.rows
+
+
+@lru_cache(maxsize=512)
+def _fetch_player_skill_snapshot(player: str, mode: str, skill: str) -> tuple[int | None, int | None, int | None]:
+    skill_idx = SKILL_NAMES.index(skill)
+    url = HISCORE_LITE_ENDPOINTS.get(mode, HISCORE_LITE_ENDPOINTS["regular"])
+    resp = requests.get(url, params={"player": player}, timeout=10)
+    resp.raise_for_status()
+    lines = resp.text.strip().splitlines()
+    if skill_idx >= len(lines):
+        return None, None, None
+
+    parts = lines[skill_idx].split(",")
+    rank = int(parts[0]) if len(parts) > 0 and parts[0].strip().isdigit() and int(parts[0]) != -1 else None
+    level = int(parts[1]) if len(parts) > 1 and parts[1].strip().isdigit() and int(parts[1]) != -1 else None
+    xp = int(parts[2]) if len(parts) > 2 and parts[2].strip().isdigit() and int(parts[2]) != -1 else None
+    return rank, level, xp
+
+
+def _xp_for_level(level: int) -> int:
+    if level <= 1:
+        return 0
+    points = 0
+    for lvl in range(1, level):
+        points += int(lvl + 300 * (2 ** (lvl / 7.0)))
+    return points // 4
+
+
+def _level_for_xp(xp: int) -> int:
+    if xp <= 0:
+        return 1
+    level = 1
+    for candidate in range(2, 127):
+        if _xp_for_level(candidate) <= xp:
+            level = candidate
+        else:
+            break
+    return level
+
+
+def _find_lowest_ranked_player(mode: str, skill: str) -> tuple[int, str] | None:
+    first_page = _fetch_hiscore_rows(mode, skill, 1)
+    if not first_page:
+        return None
+
+    low = 1
+    high = 1
+    while True:
+        rows = _fetch_hiscore_rows(mode, skill, high)
+        if not rows:
+            break
+        low = high
+        high *= 2
+        if high > 200_000:
+            break
+
+    left = low + 1
+    right = high
+    last_non_empty = low
+    while left <= right:
+        mid = (left + right) // 2
+        rows = _fetch_hiscore_rows(mode, skill, mid)
+        if rows:
+            last_non_empty = mid
+            left = mid + 1
+        else:
+            right = mid - 1
+
+    tail_rows = _fetch_hiscore_rows(mode, skill, last_non_empty)
+    if not tail_rows:
+        return None
+    return tail_rows[-1]
+
+
+def get_rank_progress(skill: str, player: str, mode: str, level: int | None, xp: int | None, rank: int | None) -> dict | None:
+    if skill not in SKILL_NAMES:
+        return None
+
+    try:
+        if isinstance(rank, int) and rank > 1:
+            page = max(1, ((rank - 1) // 25) + 1)
+            rows = _fetch_hiscore_rows(mode, skill, page)
+            target_name = None
+            for row_rank, row_name in rows:
+                if row_rank == rank - 1:
+                    target_name = row_name
+                    break
+
+            if not target_name and page > 1:
+                prev_rows = _fetch_hiscore_rows(mode, skill, page - 1)
+                for row_rank, row_name in prev_rows:
+                    if row_rank == rank - 1:
+                        target_name = row_name
+                        break
+
+            if not target_name:
+                return None
+
+            _, _, target_xp = _fetch_player_skill_snapshot(target_name, mode, skill)
+            if target_xp is None or xp is None:
+                return None
+
+            xp_needed = max(0, target_xp - xp + 1)
+            levels_needed = None
+            if isinstance(level, int) and level < 99:
+                target_level_from_xp = _level_for_xp(target_xp + 1)
+                levels_needed = max(0, target_level_from_xp - level)
+
+            return {
+                "target": "Next Rank",
+                "xp_needed": xp_needed,
+                "levels_needed": levels_needed,
+            }
+
+        if rank in (None, 0):
+            cutoff = _find_lowest_ranked_player(mode, skill)
+            if not cutoff:
+                return None
+
+            _, cutoff_player = cutoff
+            _, _, cutoff_xp = _fetch_player_skill_snapshot(cutoff_player, mode, skill)
+            if cutoff_xp is None:
+                return None
+
+            current_xp = xp if isinstance(xp, int) else 0
+            xp_needed = max(0, cutoff_xp - current_xp + 1)
+
+            levels_needed = None
+            if isinstance(level, int) and level < 99:
+                target_level_from_xp = _level_for_xp(cutoff_xp + 1)
+                levels_needed = max(0, target_level_from_xp - level)
+
+            return {
+                "target": "Get Ranked",
+                "xp_needed": xp_needed,
+                "levels_needed": levels_needed,
+            }
+    except Exception:
+        return None
+
+    return None
+
+
+def build_rank_progress_rows(player: str, mode: str) -> list[dict]:
+    rows: list[dict] = []
+    latest = get_latest_skills(player, mode)
+    if latest.empty:
+        return rows
+
+    for skill in SKILL_NAMES:
+        skill_row = latest[latest["skill"] == skill]
+        if skill_row.empty:
+            continue
+
+        level = int(skill_row["level"].iloc[0]) if pd.notna(skill_row["level"].iloc[0]) else None
+        xp = int(skill_row["xp"].iloc[0]) if pd.notna(skill_row["xp"].iloc[0]) else None
+        rank = int(skill_row["rank"].iloc[0]) if pd.notna(skill_row["rank"].iloc[0]) else None
+
+        progress = get_rank_progress(skill, player, mode, level, xp, rank)
+        if not progress:
+            continue
+
+        rows.append({
+            "skill": skill,
+            "target": progress["target"],
+            "xp_needed": progress["xp_needed"],
+            "levels_needed": progress.get("levels_needed"),
+        })
+
+    rows.sort(key=lambda row: row["xp_needed"])
+    return rows
+
+
+def make_xp_to_target_trend(player: str, skill: str, mode: str = "regular") -> go.Figure:
+    fig = go.Figure()
+
+    df = get_skill_history(player, skill, mode)
+    df_plot = df.dropna(subset=["timestamp", "xp"]).copy()
+    if df_plot.empty:
+        fig.add_annotation(
+            text="No XP history available",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(color=TEXT_DIM, size=14)
+        )
+        _style_fig(fig, f"{skill} — XP to rank target ({player})")
+        return fig
+
+    latest = df_plot.iloc[-1]
+    latest_level = int(latest["level"]) if pd.notna(latest.get("level")) else None
+    latest_xp = int(latest["xp"])
+    latest_rank = int(latest["rank"]) if pd.notna(latest.get("rank")) else None
+
+    progress = get_rank_progress(skill, player, mode, latest_level, latest_xp, latest_rank)
+    if not progress:
+        fig.add_annotation(
+            text="Could not resolve live rank target right now",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(color=TEXT_DIM, size=14)
+        )
+        _style_fig(fig, f"{skill} — XP to rank target ({player})")
+        return fig
+
+    target_xp = latest_xp + int(progress["xp_needed"])
+    df_plot["xp_to_target"] = (target_xp - df_plot["xp"]).clip(lower=0)
+
+    fig.add_trace(go.Scatter(
+        x=df_plot["timestamp"],
+        y=df_plot["xp_to_target"],
+        mode="lines+markers",
+        line=dict(color=ACCENT, width=2.5),
+        marker=dict(size=5, color=ACCENT),
+        name="XP to target",
+        hovertemplate="<b>%{x|%d %b %Y %H:%M UTC}</b><br>XP to target: %{y:,.0f}<extra></extra>",
+    ))
+
+    fig.add_annotation(
+        text=f"Live target: {progress['target']} (estimated)",
+        xref="paper", yref="paper", x=0.01, y=0.98,
+        showarrow=False, font=dict(color=TEXT_DIM, size=11, family="monospace")
+    )
+
+    _style_fig(fig, f"{skill} — XP to rank target ({player})")
+    fig.update_yaxes(title="XP")
+    return fig
 
 
 def load_dead_hcim_players() -> set[str]:
@@ -218,6 +531,28 @@ def get_snapshot_count(player: str, mode: str = "regular") -> int:
             "SELECT COUNT(*) FROM snapshots WHERE player = :player AND mode = :mode"
         ), {"player": player.lower(), "mode": mode}).scalar_one()
     return int(n)
+
+
+def get_latest_quest_summary(player: str, mode: str = "regular") -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(text("""
+            SELECT qs.completed, qs.in_progress, qs.not_started, qs.source
+            FROM quest_summary qs
+            JOIN snapshots s ON s.id = qs.snapshot_id
+            WHERE s.player = :player AND s.mode = :mode
+            ORDER BY s.timestamp DESC
+            LIMIT 1
+        """), {"player": player.lower(), "mode": mode}).fetchone()
+
+    if not row:
+        return None
+
+    return {
+        "completed": int(row[0]) if row[0] is not None else None,
+        "in_progress": int(row[1]) if row[1] is not None else None,
+        "not_started": int(row[2]) if row[2] is not None else None,
+        "source": str(row[3]) if row[3] is not None else "",
+    }
 
 
 def get_first_last_dates(player: str, mode: str = "regular") -> tuple[str | None, str | None]:
@@ -971,6 +1306,11 @@ def main_page_layout():
         "padding": "20px 32px"
     }),
 
+    # Per-skill rank progress table
+    html.Div(id="rank-target-table", style={
+        "padding": "0 32px 16px 32px"
+    }),
+
     # Charts grid
     html.Div([
         # Top row: XP trend + Rank trend
@@ -1000,6 +1340,10 @@ def main_page_layout():
         # Third row: average XP/day trend
         html.Div([
             dcc.Graph(id="avg-xp-day-chart",
+                      config={"displayModeBar": False},
+                      className="chart-card",
+                      style={"flex": "1", "minWidth": "0", "height": "340px"}),
+            dcc.Graph(id="xp-to-target-chart",
                       config={"displayModeBar": False},
                       className="chart-card",
                       style={"flex": "1", "minWidth": "0", "height": "340px"}),
@@ -1176,6 +1520,35 @@ def update_stat_cards(player_value, skill):
     total_xp    = int(overall_row["xp"].iloc[0])    if not overall_row.empty and pd.notna(overall_row["xp"].iloc[0])    else "—"
     avg_daily_7d = get_7d_avg_daily_overall_xp_gain(player, mode)
     avg_daily_7d_display = f"{avg_daily_7d:,}" if isinstance(avg_daily_7d, int) else "—"
+    rank_progress = get_rank_progress(
+        skill,
+        player,
+        mode,
+        level if isinstance(level, int) else None,
+        xp if isinstance(xp, int) else None,
+        rank if isinstance(rank, int) else None,
+    )
+    rank_target = rank_progress["target"] if rank_progress else "Rank Progress"
+    rank_xp_needed = f"{rank_progress['xp_needed']:,}" if rank_progress else "—"
+    rank_level_note = ""
+    if rank_progress and isinstance(rank_progress.get("levels_needed"), int):
+        lvls = rank_progress["levels_needed"]
+        rank_level_note = f"~{lvls} level{'s' if lvls != 1 else ''}"
+
+    quest_summary = get_latest_quest_summary(player, mode)
+    quest_completed = "—"
+    quest_in_progress = "—"
+    quest_not_started = "—"
+    quest_tooltip = "No quest summary export linked yet."
+    if quest_summary:
+        if isinstance(quest_summary["completed"], int):
+            quest_completed = f"{quest_summary['completed']:,}"
+        if isinstance(quest_summary["in_progress"], int):
+            quest_in_progress = f"{quest_summary['in_progress']:,}"
+        if isinstance(quest_summary["not_started"], int):
+            quest_not_started = f"{quest_summary['not_started']:,}"
+        source = quest_summary.get("source") or "quest export"
+        quest_tooltip = f"Latest quest state counts from {source}."
 
     cards = [
         stat_card("Total Level",    f"{total_level:,}" if isinstance(total_level, int) else total_level),
@@ -1184,6 +1557,21 @@ def update_stat_cards(player_value, skill):
             "7D Avg XP/Day",
             avg_daily_7d_display,
             tooltip="Overall XP gained over the latest 7-day window divided by elapsed days between snapshots.",
+        ),
+        stat_card("Quests Completed", quest_completed, tooltip=quest_tooltip),
+        stat_card("Quests In Progress", quest_in_progress, tooltip=quest_tooltip),
+        stat_card("Quests Not Started", quest_not_started, tooltip=quest_tooltip),
+        stat_card(
+            "Rank Target",
+            rank_target,
+            tooltip="For selected skill: next rank if already ranked, or first ranked threshold if currently unranked.",
+        ),
+        stat_card(
+            "XP To Target",
+            rank_xp_needed,
+            delta=rank_level_note,
+            delta_positive=True,
+            tooltip="Estimated XP needed for selected rank target; threshold moves as other players gain XP.",
         ),
         stat_card(f"{skill} Level", f"{level}"         if isinstance(level, int)        else level),
         stat_card(f"{skill} XP",    f"{xp:,}"          if isinstance(xp, int)           else xp,
@@ -1198,9 +1586,70 @@ def update_stat_cards(player_value, skill):
 
 
 @app.callback(
+    Output("rank-target-table", "children"),
+    Input("player-dropdown", "value"),
+)
+def update_rank_target_table(player_value):
+    if not player_value:
+        return html.Div()
+
+    player, mode = parse_player_value(player_value)
+    rows = build_rank_progress_rows(player, mode)
+    if not rows:
+        return html.Div(
+            "Rank progress table unavailable right now.",
+            style={
+                "color": TEXT_DIM,
+                "fontSize": "12px",
+                "fontFamily": "monospace",
+                "padding": "10px 4px",
+            }
+        )
+
+    header_cells = [
+        html.Th("Skill", style={"textAlign": "left", "padding": "8px 10px", "color": TEXT_DIM}),
+        html.Th("Target", style={"textAlign": "left", "padding": "8px 10px", "color": TEXT_DIM}),
+        html.Th("XP To Target", style={"textAlign": "right", "padding": "8px 10px", "color": TEXT_DIM}),
+        html.Th("Est. Levels", style={"textAlign": "right", "padding": "8px 10px", "color": TEXT_DIM}),
+    ]
+
+    body_rows = []
+    for row in rows:
+        lvl_text = "—"
+        if isinstance(row.get("levels_needed"), int):
+            lvls = row["levels_needed"]
+            lvl_text = f"{lvls}"
+        body_rows.append(
+            html.Tr([
+                html.Td(row["skill"], style={"padding": "7px 10px"}),
+                html.Td(row["target"], style={"padding": "7px 10px"}),
+                html.Td(f"{int(row['xp_needed']):,}", style={"padding": "7px 10px", "textAlign": "right"}),
+                html.Td(lvl_text, style={"padding": "7px 10px", "textAlign": "right"}),
+            ], style={"borderTop": f"1px solid {BORDER}"})
+        )
+
+    return html.Div([
+        html.Div(
+            "Per-skill rank progress (live estimate)",
+            style={"color": TEXT_DIM, "fontSize": "12px", "fontFamily": "monospace", "marginBottom": "8px"}
+        ),
+        html.Table([
+            html.Thead(html.Tr(header_cells, style={"borderBottom": f"1px solid {BORDER}"})),
+            html.Tbody(body_rows),
+        ], style={"width": "100%", "borderCollapse": "collapse", "fontSize": "13px"}),
+    ], style={
+        "background": CARD_BG,
+        "border": f"1px solid {BORDER}",
+        "borderRadius": "8px",
+        "padding": "12px 12px 10px 12px",
+    })
+
+
+@app.callback(
     Output("xp-trend-chart", "figure"),
     Output("rank-trend-chart", "figure"),
     Output("avg-xp-day-chart", "figure"),
+    Output("xp-to-target-chart", "figure"),
     Input("player-dropdown", "value"),
     Input("skill-dropdown", "value"),
 )
@@ -1208,12 +1657,13 @@ def update_trend_charts(player_value, skill):
     if not player_value or not skill:
         empty = go.Figure()
         _style_fig(empty, "")
-        return empty, empty, empty
+        return empty, empty, empty, empty
     player, mode = parse_player_value(player_value)
     return (
         make_xp_trend(player, skill, mode),
         make_rank_trend(player, skill, mode),
         make_avg_daily_xp_trend(player, mode),
+        make_xp_to_target_trend(player, skill, mode),
     )
 
 

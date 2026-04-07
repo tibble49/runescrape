@@ -5,6 +5,9 @@ Supports all game modes: regular, ironman, hardcore ironman, ultimate ironman, d
 
 Run manually or schedule via Windows Task Scheduler to collect daily data.
 
+Optionally attaches quest summary counts from JSON export:
+    assets/quest_status.json (or OSRS_QUEST_EXPORT_PATH)
+
 Examples:
     python collector.py
     python collector.py --player tibble49
@@ -30,11 +33,13 @@ from db import (
     snapshots_table,
     skill_data_table,
     minigame_data_table,
+    quest_summary_table,
 )
 
 DB_FILE = os.getenv("OSRS_DB_PATH", "osrs_hiscores.db")
 SEED_DB_FILE = os.getenv("OSRS_SEED_DB_PATH", "seed/osrs_hiscores_seed.sqlite3")
 DEAD_HCIM_FILE = os.getenv("OSRS_DEAD_HCIM_PATH", "assets/dead_hcim_players.json")
+QUEST_EXPORT_FILE = os.getenv("OSRS_QUEST_EXPORT_PATH", "assets/quest_status.json")
 
 # All available game mode API endpoints
 GAME_MODES = {
@@ -437,7 +442,80 @@ def parse_int(value: str) -> int | None:
         return None
 
 
-def store_snapshot(engine, player: str, mode: str, lines: list[str]):
+def _parse_non_negative_int(value) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _parse_quest_entry(entry: dict) -> dict | None:
+    if not isinstance(entry, dict):
+        return None
+
+    player = str(entry.get("player", "")).strip().lower()
+    if not player:
+        return None
+
+    mode = str(entry.get("mode", "regular")).strip().lower() or "regular"
+
+    completed = _parse_non_negative_int(entry.get("completed"))
+    in_progress = _parse_non_negative_int(entry.get("in_progress", entry.get("started")))
+    not_started = _parse_non_negative_int(entry.get("not_started"))
+
+    if completed is None and in_progress is None and not_started is None:
+        return None
+
+    source = str(entry.get("source", "runelite_export")).strip() or "runelite_export"
+    return {
+        "player": player,
+        "mode": mode,
+        "completed": completed,
+        "in_progress": in_progress,
+        "not_started": not_started,
+        "source": source,
+    }
+
+
+def load_quest_export_index() -> dict[tuple[str, str], dict]:
+    """Loads optional quest summary exports keyed by (player, mode)."""
+    if not os.path.exists(QUEST_EXPORT_FILE):
+        return {}
+
+    try:
+        with open(QUEST_EXPORT_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception as ex:
+        print(f"WARNING: Could not parse {QUEST_EXPORT_FILE}: {ex}")
+        return {}
+
+    entries: list[dict] = []
+    if isinstance(payload, list):
+        entries = payload
+    elif isinstance(payload, dict):
+        if isinstance(payload.get("players"), list):
+            entries = payload["players"]
+        else:
+            entries = [payload]
+
+    index: dict[tuple[str, str], dict] = {}
+    for entry in entries:
+        parsed = _parse_quest_entry(entry)
+        if not parsed:
+            continue
+        index[(parsed["player"], parsed["mode"])] = parsed
+
+    return index
+
+
+def store_snapshot(
+    engine,
+    player: str,
+    mode: str,
+    lines: list[str],
+    quest_export_index: dict[tuple[str, str], dict] | None = None,
+) -> tuple[int, bool]:
     now = datetime.now(timezone.utc)
     timestamp = now.isoformat()
     date = now.strftime("%Y-%m-%d")
@@ -499,7 +577,20 @@ def store_snapshot(engine, player: str, mode: str, lines: list[str]):
         conn.execute(insert(skill_data_table), skill_payload)
         conn.execute(insert(minigame_data_table), minigame_payload)
 
-    return snap_id
+        quest_added = False
+        if quest_export_index:
+            quest_entry = quest_export_index.get((player.lower(), mode))
+            if quest_entry:
+                conn.execute(insert(quest_summary_table), {
+                    "snapshot_id": snap_id,
+                    "completed": quest_entry["completed"],
+                    "in_progress": quest_entry["in_progress"],
+                    "not_started": quest_entry["not_started"],
+                    "source": quest_entry["source"],
+                })
+                quest_added = True
+
+    return snap_id, quest_added
 
 
 def collect(entries: list[tuple[str, str]], skip_inactive: bool = False):
@@ -507,6 +598,12 @@ def collect(entries: list[tuple[str, str]], skip_inactive: bool = False):
     ensure_seed_db()
     engine = get_engine()
     init_db(engine)
+    quest_export_index = load_quest_export_index()
+    if quest_export_index:
+        print(
+            f"Loaded quest summary export for {len(quest_export_index)} player/mode entries "
+            f"from {QUEST_EXPORT_FILE}."
+        )
     dead_hcim_players = load_dead_hcim_players()
     dead_hcim_changed = False
 
@@ -529,11 +626,12 @@ def collect(entries: list[tuple[str, str]], skip_inactive: bool = False):
                 dead_hcim_players.discard(normalized_player)
                 dead_hcim_changed = True
 
-            snap_id = store_snapshot(engine, player, mode, lines)
+            snap_id, quest_added = store_snapshot(engine, player, mode, lines, quest_export_index)
             overall = lines[0].split(",") if lines else ["?", "?", "?"]
             level = overall[1] if len(overall) > 1 else "?"
             xp    = overall[2] if len(overall) > 2 else "?"
-            print(f"OK (snapshot #{snap_id}, total level {level}, xp {xp})")
+            quest_note = ", quest summary linked" if quest_added else ""
+            print(f"OK (snapshot #{snap_id}, total level {level}, xp {xp}{quest_note})")
         except Exception as e:
             if mode == ANCHOR_MODE and "not found" in str(e).lower():
                 if normalized_player not in dead_hcim_players:

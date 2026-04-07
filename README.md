@@ -84,11 +84,58 @@ After a week or two you'll have enough data for meaningful trend lines.
 ## Dashboard features
 
 - **Stat cards** — current level, XP, rank, and XP gained since tracking started
+- **Quest widgets (optional)** — quests completed, in progress, and not started
 - **XP trend chart** — XP over time with daily XP-gained bars
 - **Rank trend chart** — rank over time (lower = better, y-axis inverted)
 - **Skills overview** — bar chart of all current skill levels (including Sailing)
 - **XP distribution** — pie chart of XP spread across your top 12 skills
 - **Multi-player support** — use the Player dropdown to switch between tracked players
+
+---
+
+## Optional RuneLite quest summary import
+
+If you export quest status counts from a RuneLite plugin, `collector.py` can attach
+that summary to each player snapshot and the dashboard will show quest widgets.
+
+Default import path:
+
+- `assets/quest_status.json`
+
+Override path with env var:
+
+- `OSRS_QUEST_EXPORT_PATH`
+
+Expected JSON shape (single player or list):
+
+```json
+{
+   "player": "tibble49",
+   "mode": "regular",
+   "completed": 168,
+   "in_progress": 4,
+   "not_started": 12,
+   "source": "runelite_plugin"
+}
+```
+
+Also supported:
+
+```json
+{
+   "players": [
+      {
+         "player": "tibble49",
+         "mode": "regular",
+         "completed": 168,
+         "in_progress": 4,
+         "not_started": 12
+      }
+   ]
+}
+```
+
+See example file: `assets/quest_status.sample.json`
 
 ---
 
