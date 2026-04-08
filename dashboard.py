@@ -26,6 +26,7 @@ from db import get_engine, get_database_url, init_db, is_postgres_url
 DB_FILE = os.getenv("OSRS_DB_PATH", "osrs_hiscores.db")
 SEED_DB_FILE = os.getenv("OSRS_SEED_DB_PATH", "seed/osrs_hiscores_seed.sqlite3")
 DEAD_HCIM_FILE = os.getenv("OSRS_DEAD_HCIM_PATH", "assets/dead_hcim_players.json")
+QUEST_EXPORT_FILE = os.getenv("OSRS_QUEST_EXPORT_PATH", "assets/quest_status.json")
 
 SKILL_NAMES = [
     "Overall", "Attack", "Defence", "Strength", "Hitpoints", "Ranged",
@@ -90,11 +91,23 @@ HISCORE_TABLE_ENDPOINTS = {
 
 SKILL_TABLE_IDS = {skill: idx for idx, skill in enumerate(SKILL_NAMES)}
 
+# Stores the latest rank-progress failure detail for UI diagnostics.
+_RANK_PROGRESS_LAST_ERROR = ""
+
+
+def _set_rank_progress_error(message: str) -> None:
+    global _RANK_PROGRESS_LAST_ERROR
+    _RANK_PROGRESS_LAST_ERROR = message
+
+
+def _get_rank_progress_error() -> str:
+    return _RANK_PROGRESS_LAST_ERROR
+
 
 class HiscoreTableParser(HTMLParser):
     def __init__(self):
         super().__init__()
-        self.rows: list[tuple[int, str]] = []
+        self.rows: list[tuple[int, str, int | None]] = []
         self._in_tr = False
         self._in_td = False
         self._current_td = ""
@@ -130,7 +143,16 @@ class HiscoreTableParser(HTMLParser):
             rank_text = self._current_row[rank_idx].replace(",", "").strip()
             player_name = self._current_row[rank_idx + 1].strip()
             if rank_text.isdigit() and player_name:
-                self.rows.append((int(rank_text), player_name))
+                # Try to capture XP directly from the row to avoid secondary lookups.
+                xp_value: int | None = None
+                for cell in reversed(self._current_row):
+                    numeric = cell.replace(",", "").strip()
+                    if numeric.isdigit():
+                        n = int(numeric)
+                        if n > 200:  # avoids selecting rank/level in most cases
+                            xp_value = n
+                            break
+                self.rows.append((int(rank_text), player_name, xp_value))
 
     def handle_data(self, data):
         if self._in_td and data:
@@ -138,19 +160,22 @@ class HiscoreTableParser(HTMLParser):
 
 
 @lru_cache(maxsize=128)
-def _fetch_hiscore_rows(mode: str, skill: str, page: int) -> list[tuple[int, str]]:
+def _fetch_hiscore_rows(mode: str, skill: str, page: int) -> list[tuple[int, str, int | None]]:
     table_id = SKILL_TABLE_IDS.get(skill)
     if table_id is None:
         return []
 
     url = HISCORE_TABLE_ENDPOINTS.get(mode, HISCORE_TABLE_ENDPOINTS["regular"])
-    resp = requests.get(
-        url,
-        params={"table": table_id, "page": page},
-        headers={"User-Agent": "Mozilla/5.0"},
-        timeout=12,
-    )
-    resp.raise_for_status()
+    try:
+        resp = requests.get(
+            url,
+            params={"table": table_id, "page": page},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=12,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as ex:
+        raise RuntimeError(f"hiscore table fetch failed [{mode}/{skill} page {page}] via {url}: {ex}") from ex
 
     parser = HiscoreTableParser()
     parser.feed(resp.text)
@@ -161,8 +186,17 @@ def _fetch_hiscore_rows(mode: str, skill: str, page: int) -> list[tuple[int, str
 def _fetch_player_skill_snapshot(player: str, mode: str, skill: str) -> tuple[int | None, int | None, int | None]:
     skill_idx = SKILL_NAMES.index(skill)
     url = HISCORE_LITE_ENDPOINTS.get(mode, HISCORE_LITE_ENDPOINTS["regular"])
-    resp = requests.get(url, params={"player": player}, timeout=10)
-    resp.raise_for_status()
+    try:
+        resp = requests.get(
+            url,
+            params={"player": player},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as ex:
+        raise RuntimeError(f"hiscore lite fetch failed [{mode}/{skill}] player={player} via {url}: {ex}") from ex
+
     lines = resp.text.strip().splitlines()
     if skill_idx >= len(lines):
         return None, None, None
@@ -195,7 +229,7 @@ def _level_for_xp(xp: int) -> int:
     return level
 
 
-def _find_lowest_ranked_player(mode: str, skill: str) -> tuple[int, str] | None:
+def _find_lowest_ranked_player(mode: str, skill: str) -> tuple[int, str, int | None] | None:
     first_page = _fetch_hiscore_rows(mode, skill, 1)
     if not first_page:
         return None
@@ -231,6 +265,7 @@ def _find_lowest_ranked_player(mode: str, skill: str) -> tuple[int, str] | None:
 
 def get_rank_progress(skill: str, player: str, mode: str, level: int | None, xp: int | None, rank: int | None) -> dict | None:
     if skill not in SKILL_NAMES:
+        _set_rank_progress_error(f"Unsupported skill: {skill}")
         return None
 
     try:
@@ -238,23 +273,33 @@ def get_rank_progress(skill: str, player: str, mode: str, level: int | None, xp:
             page = max(1, ((rank - 1) // 25) + 1)
             rows = _fetch_hiscore_rows(mode, skill, page)
             target_name = None
-            for row_rank, row_name in rows:
+            target_xp = None
+            for row_rank, row_name, row_xp in rows:
                 if row_rank == rank - 1:
                     target_name = row_name
+                    target_xp = row_xp
                     break
 
             if not target_name and page > 1:
                 prev_rows = _fetch_hiscore_rows(mode, skill, page - 1)
-                for row_rank, row_name in prev_rows:
+                for row_rank, row_name, row_xp in prev_rows:
                     if row_rank == rank - 1:
                         target_name = row_name
+                        target_xp = row_xp
                         break
 
             if not target_name:
+                _set_rank_progress_error(
+                    f"Could not find rank #{rank - 1} row for {skill} ({mode}); table row parsing returned no target."
+                )
                 return None
 
-            _, _, target_xp = _fetch_player_skill_snapshot(target_name, mode, skill)
+            if target_xp is None:
+                _, _, target_xp = _fetch_player_skill_snapshot(target_name, mode, skill)
             if target_xp is None or xp is None:
+                _set_rank_progress_error(
+                    f"Missing XP values for next-rank calculation ({skill}, {mode})."
+                )
                 return None
 
             xp_needed = max(0, target_xp - xp + 1)
@@ -263,6 +308,7 @@ def get_rank_progress(skill: str, player: str, mode: str, level: int | None, xp:
                 target_level_from_xp = _level_for_xp(target_xp + 1)
                 levels_needed = max(0, target_level_from_xp - level)
 
+            _set_rank_progress_error("")
             return {
                 "target": "Next Rank",
                 "xp_needed": xp_needed,
@@ -272,11 +318,18 @@ def get_rank_progress(skill: str, player: str, mode: str, level: int | None, xp:
         if rank in (None, 0):
             cutoff = _find_lowest_ranked_player(mode, skill)
             if not cutoff:
+                _set_rank_progress_error(
+                    f"Could not find ranked cutoff for {skill} ({mode}); hiscore table returned no rows."
+                )
                 return None
 
-            _, cutoff_player = cutoff
-            _, _, cutoff_xp = _fetch_player_skill_snapshot(cutoff_player, mode, skill)
+            _, cutoff_player, cutoff_xp = cutoff
             if cutoff_xp is None:
+                _, _, cutoff_xp = _fetch_player_skill_snapshot(cutoff_player, mode, skill)
+            if cutoff_xp is None:
+                _set_rank_progress_error(
+                    f"Could not resolve cutoff XP for {skill} ({mode})."
+                )
                 return None
 
             current_xp = xp if isinstance(xp, int) else 0
@@ -287,14 +340,17 @@ def get_rank_progress(skill: str, player: str, mode: str, level: int | None, xp:
                 target_level_from_xp = _level_for_xp(cutoff_xp + 1)
                 levels_needed = max(0, target_level_from_xp - level)
 
+            _set_rank_progress_error("")
             return {
                 "target": "Get Ranked",
                 "xp_needed": xp_needed,
                 "levels_needed": levels_needed,
             }
-    except Exception:
+    except Exception as ex:
+        _set_rank_progress_error(str(ex))
         return None
 
+    _set_rank_progress_error("Rank target unavailable for current state.")
     return None
 
 
@@ -349,8 +405,14 @@ def make_xp_to_target_trend(player: str, skill: str, mode: str = "regular") -> g
 
     progress = get_rank_progress(skill, player, mode, latest_level, latest_xp, latest_rank)
     if not progress:
+        reason = _get_rank_progress_error() or "Unknown rank-target lookup failure"
+        if len(reason) > 180:
+            reason = reason[:180] + "..."
         fig.add_annotation(
-            text="Could not resolve live rank target right now",
+            text=(
+                "Could not resolve live rank target right now"
+                f"<br><span style='font-size:11px'>{reason}</span>"
+            ),
             xref="paper", yref="paper", x=0.5, y=0.5,
             showarrow=False, font=dict(color=TEXT_DIM, size=14)
         )
@@ -533,26 +595,100 @@ def get_snapshot_count(player: str, mode: str = "regular") -> int:
     return int(n)
 
 
-def get_latest_quest_summary(player: str, mode: str = "regular") -> dict | None:
-    with get_conn() as conn:
-        row = conn.execute(text("""
-            SELECT qs.completed, qs.in_progress, qs.not_started, qs.source
-            FROM quest_summary qs
-            JOIN snapshots s ON s.id = qs.snapshot_id
-            WHERE s.player = :player AND s.mode = :mode
-            ORDER BY s.timestamp DESC
-            LIMIT 1
-        """), {"player": player.lower(), "mode": mode}).fetchone()
-
-    if not row:
+def _parse_quest_export_entry(entry: dict) -> dict | None:
+    if not isinstance(entry, dict):
         return None
 
+    entry_player = str(entry.get("player", "")).strip().lower()
+    if not entry_player:
+        return None
+
+    entry_mode = str(entry.get("mode", "regular")).strip().lower() or "regular"
+
+    def _to_int(value):
+        try:
+            parsed = int(value)
+            return parsed if parsed >= 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    completed = _to_int(entry.get("completed"))
+    in_progress = _to_int(entry.get("in_progress", entry.get("started")))
+    not_started = _to_int(entry.get("not_started"))
+
+    if completed is None and in_progress is None and not_started is None:
+        return None
+
+    source = str(entry.get("source", "runelite_export")).strip() or "runelite_export"
     return {
-        "completed": int(row[0]) if row[0] is not None else None,
-        "in_progress": int(row[1]) if row[1] is not None else None,
-        "not_started": int(row[2]) if row[2] is not None else None,
-        "source": str(row[3]) if row[3] is not None else "",
+        "player": entry_player,
+        "mode": entry_mode,
+        "completed": completed,
+        "in_progress": in_progress,
+        "not_started": not_started,
+        "source": source,
     }
+
+
+def get_latest_quest_summary_from_export(player: str, mode: str = "regular") -> dict | None:
+    if not os.path.exists(QUEST_EXPORT_FILE):
+        return None
+
+    try:
+        with open(QUEST_EXPORT_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception:
+        return None
+
+    entries: list[dict] = []
+    if isinstance(payload, list):
+        entries = payload
+    elif isinstance(payload, dict):
+        if isinstance(payload.get("players"), list):
+            entries = payload["players"]
+        else:
+            entries = [payload]
+
+    player_key = player.lower()
+    mode_key = mode.lower() or "regular"
+    for entry in entries:
+        parsed = _parse_quest_export_entry(entry)
+        if not parsed:
+            continue
+        if parsed["player"] == player_key and parsed["mode"] == mode_key:
+            return {
+                "completed": parsed["completed"],
+                "in_progress": parsed["in_progress"],
+                "not_started": parsed["not_started"],
+                "source": parsed["source"],
+            }
+
+    return None
+
+
+def get_latest_quest_summary(player: str, mode: str = "regular") -> dict | None:
+    try:
+        with get_conn() as conn:
+            row = conn.execute(text("""
+                SELECT qs.completed, qs.in_progress, qs.not_started, qs.source
+                FROM quest_summary qs
+                JOIN snapshots s ON s.id = qs.snapshot_id
+                WHERE s.player = :player AND s.mode = :mode
+                ORDER BY s.timestamp DESC
+                LIMIT 1
+            """), {"player": player.lower(), "mode": mode}).fetchone()
+
+        if row:
+            return {
+                "completed": int(row[0]) if row[0] is not None else None,
+                "in_progress": int(row[1]) if row[1] is not None else None,
+                "not_started": int(row[2]) if row[2] is not None else None,
+                "source": str(row[3]) if row[3] is not None else "",
+            }
+    except Exception:
+        pass
+
+    return get_latest_quest_summary_from_export(player, mode)
 
 
 def get_first_last_dates(player: str, mode: str = "regular") -> tuple[str | None, str | None]:
@@ -756,8 +892,9 @@ def make_skills_overview(player: str, mode: str = "regular") -> go.Figure:
         _style_fig(fig, "Skills Overview")
         return fig
 
-    skills_df = df[df["skill"].isin(SKILL_NAMES)].copy()
-    skills_df["skill"] = pd.Categorical(skills_df["skill"], categories=SKILL_NAMES, ordered=True)
+    chart_skills = [s for s in SKILL_NAMES if s != "Overall"]
+    skills_df = df[df["skill"].isin(chart_skills)].copy()
+    skills_df["skill"] = pd.Categorical(skills_df["skill"], categories=chart_skills, ordered=True)
     skills_df = skills_df.sort_values("skill")
     skills_df["color"] = skills_df["skill"].map(SKILL_COLORS).fillna(ACCENT)
     skills_df["level"] = skills_df["level"].fillna(1).astype(int)
