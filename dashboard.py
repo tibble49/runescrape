@@ -802,8 +802,8 @@ def get_7d_avg_daily_overall_xp_gain(player: str, mode: str = "regular") -> int 
     return int(round(gained_xp / elapsed_days))
 
 
-def get_7d_overall_xp_delta(player: str, mode: str = "regular") -> int | None:
-    """Returns net Overall XP change across the latest available 7-day window."""
+def get_7d_overall_xp_day_delta(player: str, mode: str = "regular") -> int | None:
+    """Returns the change in Overall XP/day between the latest and previous 7-day windows."""
     hist = get_skill_history(player, "Overall", mode)
     if hist.empty or len(hist) < 2:
         return None
@@ -813,24 +813,41 @@ def get_7d_overall_xp_delta(player: str, mode: str = "regular") -> int | None:
         return None
 
     latest_ts = df["timestamp"].iloc[-1]
-    latest_xp = int(df["xp"].iloc[-1])
-    window_start = latest_ts - pd.Timedelta(days=7)
 
-    before_or_at = df[df["timestamp"] <= window_start]
-    if not before_or_at.empty:
-        base_row = before_or_at.iloc[-1]
-    else:
-        within_window = df[df["timestamp"] >= window_start]
-        if within_window.empty:
+    def _window_avg(end_ts: pd.Timestamp) -> int | None:
+        window_start = end_ts - pd.Timedelta(days=7)
+        before_or_at = df[df["timestamp"] <= window_start]
+        if not before_or_at.empty:
+            base_row = before_or_at.iloc[-1]
+        else:
+            within_window = df[df["timestamp"] >= window_start]
+            if within_window.empty:
+                return None
+            base_row = within_window.iloc[0]
+
+        base_ts = base_row["timestamp"]
+        if end_ts <= base_ts:
             return None
-        base_row = within_window.iloc[0]
 
-    base_ts = base_row["timestamp"]
-    if latest_ts <= base_ts:
+        elapsed_days = (end_ts - base_ts).total_seconds() / 86400
+        if elapsed_days <= 0:
+            return None
+
+        base_xp = int(base_row["xp"])
+        end_xp = int(df[df["timestamp"] <= end_ts]["xp"].iloc[-1])
+        gained_xp = end_xp - base_xp
+        if gained_xp < 0:
+            return None
+
+        return int(round(gained_xp / elapsed_days))
+
+    latest_avg = _window_avg(latest_ts)
+    previous_boundary = latest_ts - pd.Timedelta(days=7)
+    previous_avg = _window_avg(previous_boundary)
+    if latest_avg is None or previous_avg is None:
         return None
 
-    base_xp = int(base_row["xp"])
-    return latest_xp - base_xp
+    return latest_avg - previous_avg
 
 
 # ── chart builders ────────────────────────────────────────────────────────────
@@ -1631,18 +1648,6 @@ def main_page_layout():
                       style={"flex": "1", "minWidth": "0", "height": "360px"}),
         ], className="chart-row", style={"display": "flex", "gap": "16px"}),
 
-        # Third row: average XP/day trend
-        html.Div([
-            dcc.Graph(id="avg-xp-day-chart",
-                      config={"displayModeBar": False},
-                      className="chart-card",
-                      style={"flex": "1", "minWidth": "0", "height": "340px"}),
-            dcc.Graph(id="xp-to-target-chart",
-                      config={"displayModeBar": False},
-                      className="chart-card",
-                      style={"flex": "1", "minWidth": "0", "height": "340px"}),
-        ], className="chart-row", style={"display": "flex", "gap": "16px", "marginTop": "16px"}),
-
     ], className="charts-grid", style={"padding": "0 32px 32px 32px"}),
 
     # Footer hint
@@ -1827,17 +1832,8 @@ def update_stat_cards(player_value, skill):
     total_xp    = int(overall_row["xp"].iloc[0])    if not overall_row.empty and pd.notna(overall_row["xp"].iloc[0])    else "—"
     avg_daily_7d = get_7d_avg_daily_overall_xp_gain(player, mode)
     avg_daily_7d_display = f"{avg_daily_7d:,}" if isinstance(avg_daily_7d, int) else "—"
-    xp_delta_7d = get_7d_overall_xp_delta(player, mode)
-    xp_delta_7d_display = f"{xp_delta_7d:+,}" if isinstance(xp_delta_7d, int) else "—"
-    rank_progress = get_rank_progress(
-        skill,
-        player,
-        mode,
-        level if isinstance(level, int) else None,
-        xp if isinstance(xp, int) else None,
-        rank if isinstance(rank, int) else None,
-    )
-    rank_target = rank_progress["target"] if rank_progress else "Rank Progress"
+    xp_day_delta_7d = get_7d_overall_xp_day_delta(player, mode)
+    xp_day_delta_7d_display = f"{xp_day_delta_7d:+,}" if isinstance(xp_day_delta_7d, int) else "—"
 
     cards = [
         stat_card("Total Level",    f"{total_level:,}" if isinstance(total_level, int) else total_level),
@@ -1848,16 +1844,11 @@ def update_stat_cards(player_value, skill):
             tooltip="Overall XP gained over the latest 7-day window divided by elapsed days between snapshots.",
         ),
         stat_card(
-            "7D XP Trend",
-            xp_delta_7d_display,
-            delta="Overall XP net change over the latest 7-day window" if isinstance(xp_delta_7d, int) else "",
-            delta_positive=(xp_delta_7d or 0) >= 0,
-            tooltip="Signed Overall XP change over the latest available 7-day window.",
-        ),
-        stat_card(
-            "Rank Target",
-            rank_target,
-            tooltip="For selected skill: next rank if already ranked, or first ranked threshold if currently unranked.",
+            "7D XP/day vs Prev",
+            xp_day_delta_7d_display,
+            delta="Positive means the last 7 days were better than the previous 7 days" if isinstance(xp_day_delta_7d, int) else "",
+            delta_positive=(xp_day_delta_7d or 0) >= 0,
+            tooltip="Difference in Overall XP/day between the last 7 days and the 7 days before that.",
         ),
         stat_card(f"{skill} Level", f"{level}"         if isinstance(level, int)        else level),
         stat_card(f"{skill} XP",    f"{xp:,}"          if isinstance(xp, int)           else xp,
@@ -1932,8 +1923,6 @@ def update_rank_target_table(player_value):
 @app.callback(
     Output("xp-trend-chart", "figure"),
     Output("rank-trend-chart", "figure"),
-    Output("avg-xp-day-chart", "figure"),
-    Output("xp-to-target-chart", "figure"),
     Input("player-dropdown", "value"),
     Input("skill-dropdown", "value"),
     Input("chart-range-toggle", "value"),
@@ -1942,14 +1931,12 @@ def update_trend_charts(player_value, skill, range_value):
     if not player_value or not skill:
         empty = go.Figure()
         _style_fig(empty, "")
-        return empty, empty, empty, empty
+        return empty, empty
     player, mode = parse_player_value(player_value)
     window_days = _resolve_time_window_days(range_value)
     return (
         make_xp_trend(player, skill, mode, window_days=window_days),
         make_rank_trend(player, skill, mode, window_days=window_days),
-        make_avg_daily_xp_trend(player, mode, window_days=window_days),
-        make_xp_to_target_trend(player, skill, mode, window_days=window_days),
     )
 
 
