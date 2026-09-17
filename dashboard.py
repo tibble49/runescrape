@@ -64,6 +64,13 @@ DISPLAY_BEHIND_COUNT = 3
 OVERALL_OUTLIER_XP_LIMIT = 30_000_000
 SKILL_OUTLIER_XP_LIMIT = 5_000_000
 INACTIVE_DAYS_LIMIT = 30
+DEFAULT_OVERALL_WINDOW_DAYS = 30
+TIME_RANGE_DEFAULT = "30"
+TIME_RANGE_OPTIONS = [
+    {"label": "30D", "value": "30"},
+    {"label": "90D", "value": "90"},
+    {"label": "All", "value": "all"},
+]
 
 FALLBACK_COMPARE_PLAYER_NAMES = [
     "XESPIS",
@@ -229,6 +236,47 @@ def _level_for_xp(xp: int) -> int:
     return level
 
 
+def _get_time_window(df: pd.DataFrame, days: int = DEFAULT_OVERALL_WINDOW_DAYS) -> tuple[pd.DataFrame, pd.Timestamp | None, pd.Timestamp | None]:
+    if df.empty or "timestamp" not in df:
+        return df, None, None
+
+    timestamps = df["timestamp"].dropna().sort_values()
+    if timestamps.empty:
+        return df, None, None
+
+    end_ts = timestamps.iloc[-1]
+    start_ts = max(timestamps.iloc[0], end_ts - pd.Timedelta(days=days))
+    window_df = df[df["timestamp"] >= start_ts].copy()
+    if window_df.empty:
+        window_df = df.tail(1).copy()
+    return window_df, start_ts, end_ts
+
+
+def _resolve_time_window_days(range_value: str | None) -> int | None:
+    if range_value == "all":
+        return None
+    if range_value == "90":
+        return 90
+    return DEFAULT_OVERALL_WINDOW_DAYS
+
+
+def _get_visible_time_window(
+    df: pd.DataFrame,
+    window_days: int | None,
+) -> tuple[pd.DataFrame, pd.Timestamp | None, pd.Timestamp | None]:
+    if df.empty or "timestamp" not in df:
+        return df, None, None
+
+    timestamps = df["timestamp"].dropna().sort_values()
+    if timestamps.empty:
+        return df, None, None
+
+    if window_days is None:
+        return df.copy(), timestamps.iloc[0], timestamps.iloc[-1]
+
+    return _get_time_window(df, days=window_days)
+
+
 def _find_lowest_ranked_player(mode: str, skill: str) -> tuple[int, str, int | None] | None:
     first_page = _fetch_hiscore_rows(mode, skill, 1)
     if not first_page:
@@ -384,7 +432,12 @@ def build_rank_progress_rows(player: str, mode: str) -> list[dict]:
     return rows
 
 
-def make_xp_to_target_trend(player: str, skill: str, mode: str = "regular") -> go.Figure:
+def make_xp_to_target_trend(
+    player: str,
+    skill: str,
+    mode: str = "regular",
+    window_days: int | None = DEFAULT_OVERALL_WINDOW_DAYS,
+) -> go.Figure:
     fig = go.Figure()
 
     df = get_skill_history(player, skill, mode)
@@ -437,6 +490,16 @@ def make_xp_to_target_trend(player: str, skill: str, mode: str = "regular") -> g
         xref="paper", yref="paper", x=0.01, y=0.98,
         showarrow=False, font=dict(color=TEXT_DIM, size=11, family="monospace")
     )
+
+    visible_df, start_ts, end_ts = _get_visible_time_window(df_plot, window_days)
+    if start_ts is not None and end_ts is not None:
+        fig.update_xaxes(range=[start_ts, end_ts])
+    if not visible_df.empty:
+        min_remaining = float(visible_df["xp_to_target"].min())
+        max_remaining = float(visible_df["xp_to_target"].max())
+        if max_remaining > min_remaining:
+            pad = max((max_remaining - min_remaining) * 0.08, 1)
+            fig.update_yaxes(range=[max(min_remaining - pad, 0), max_remaining + pad])
 
     _style_fig(fig, f"{skill} — XP to rank target ({player})")
     fig.update_yaxes(title="XP")
@@ -739,9 +802,45 @@ def get_7d_avg_daily_overall_xp_gain(player: str, mode: str = "regular") -> int 
     return int(round(gained_xp / elapsed_days))
 
 
+def get_7d_overall_xp_delta(player: str, mode: str = "regular") -> int | None:
+    """Returns net Overall XP change across the latest available 7-day window."""
+    hist = get_skill_history(player, "Overall", mode)
+    if hist.empty or len(hist) < 2:
+        return None
+
+    df = hist.dropna(subset=["xp", "timestamp"]).copy()
+    if df.empty or len(df) < 2:
+        return None
+
+    latest_ts = df["timestamp"].iloc[-1]
+    latest_xp = int(df["xp"].iloc[-1])
+    window_start = latest_ts - pd.Timedelta(days=7)
+
+    before_or_at = df[df["timestamp"] <= window_start]
+    if not before_or_at.empty:
+        base_row = before_or_at.iloc[-1]
+    else:
+        within_window = df[df["timestamp"] >= window_start]
+        if within_window.empty:
+            return None
+        base_row = within_window.iloc[0]
+
+    base_ts = base_row["timestamp"]
+    if latest_ts <= base_ts:
+        return None
+
+    base_xp = int(base_row["xp"])
+    return latest_xp - base_xp
+
+
 # ── chart builders ────────────────────────────────────────────────────────────
 
-def make_xp_trend(player: str, skill: str, mode: str = "regular") -> go.Figure:
+def make_xp_trend(
+    player: str,
+    skill: str,
+    mode: str = "regular",
+    window_days: int | None = DEFAULT_OVERALL_WINDOW_DAYS,
+) -> go.Figure:
     df = get_skill_history(player, skill, mode)
     df_plot = df.dropna(subset=["xp"]).copy()
     color = SKILL_COLORS.get(skill, ACCENT)
@@ -755,10 +854,9 @@ def make_xp_trend(player: str, skill: str, mode: str = "regular") -> go.Figure:
             showarrow=False, font=dict(color=TEXT_DIM, size=14)
         )
     else:
-        first_ts = df_plot["timestamp"].iloc[0]
-        last_ts = df_plot["timestamp"].iloc[-1]
-        first_xp = float(df_plot["xp"].iloc[0])
-        max_xp = float(df_plot["xp"].max())
+        visible_df, first_ts, last_ts = _get_visible_time_window(df_plot, window_days)
+        min_xp = float(visible_df["xp"].min())
+        max_xp = float(visible_df["xp"].max())
 
         # XP area
         fig.add_trace(go.Scatter(
@@ -771,14 +869,19 @@ def make_xp_trend(player: str, skill: str, mode: str = "regular") -> go.Figure:
         ))
 
         fig.update_xaxes(range=[first_ts, last_ts])
-        if max_xp > first_xp:
-            fig.update_yaxes(range=[first_xp, max_xp])
+        if max_xp > min_xp:
+            fig.update_yaxes(range=[min_xp, max_xp])
 
     _style_fig(fig, f"{skill} — XP over time ({player})")
     return fig
 
 
-def make_rank_trend(player: str, skill: str, mode: str = "regular") -> go.Figure:
+def make_rank_trend(
+    player: str,
+    skill: str,
+    mode: str = "regular",
+    window_days: int | None = DEFAULT_OVERALL_WINDOW_DAYS,
+) -> go.Figure:
     df = get_skill_history(player, skill, mode)
     df_plot = df.dropna(subset=["rank"]).copy()
     color = SKILL_COLORS.get(skill, ACCENT)
@@ -792,10 +895,9 @@ def make_rank_trend(player: str, skill: str, mode: str = "regular") -> go.Figure
             showarrow=False, font=dict(color=TEXT_DIM, size=14)
         )
     else:
-        first_ts = df_plot["timestamp"].iloc[0]
-        last_ts = df_plot["timestamp"].iloc[-1]
-        first_rank = float(df_plot["rank"].iloc[0])
-        min_rank = float(df_plot["rank"].min())
+        visible_df, first_ts, last_ts = _get_visible_time_window(df_plot, window_days)
+        max_rank = float(visible_df["rank"].max())
+        min_rank = float(visible_df["rank"].min())
 
         fig.add_trace(go.Scatter(
             x=df_plot["timestamp"], y=df_plot["rank"],
@@ -807,8 +909,8 @@ def make_rank_trend(player: str, skill: str, mode: str = "regular") -> go.Figure
         ))
 
         fig.update_xaxes(range=[first_ts, last_ts])
-        if first_rank > min_rank:
-            fig.update_yaxes(range=[first_rank, min_rank], autorange="reversed")
+        if max_rank > min_rank:
+            fig.update_yaxes(range=[max_rank, min_rank], autorange="reversed")
 
     _style_fig(fig, f"{skill} — Rank over time ({player})")
     # Invert y-axis: lower rank number = better
@@ -816,7 +918,11 @@ def make_rank_trend(player: str, skill: str, mode: str = "regular") -> go.Figure
     return fig
 
 
-def make_avg_daily_xp_trend(player: str, mode: str = "regular") -> go.Figure:
+def make_avg_daily_xp_trend(
+    player: str,
+    mode: str = "regular",
+    window_days: int | None = DEFAULT_OVERALL_WINDOW_DAYS,
+) -> go.Figure:
     """Shows trend of average Overall XP earned per day between snapshots."""
     df = get_skill_history(player, "Overall", mode)
     df_plot = df.dropna(subset=["xp", "timestamp"]).copy()
@@ -875,7 +981,17 @@ def make_avg_daily_xp_trend(player: str, mode: str = "regular") -> go.Figure:
         hovertemplate="<b>%{x|%d %b %Y %H:%M UTC}</b><br>Smoothed XP/day: %{y:,.0f}<extra></extra>"
     ))
 
+    visible_df, start_ts, end_ts = _get_visible_time_window(df_plot, window_days)
+
     _style_fig(fig, f"Overall — Average XP/day trend ({player})")
+    if start_ts is not None and end_ts is not None:
+        fig.update_xaxes(range=[start_ts, end_ts])
+    if not visible_df.empty:
+        min_rate = float(visible_df[["xp_per_day", "xp_per_day_ma"]].min().min())
+        max_rate = float(visible_df[["xp_per_day", "xp_per_day_ma"]].max().max())
+        if max_rate > min_rate:
+            pad = max((max_rate - min_rate) * 0.08, 1)
+            fig.update_yaxes(range=[min_rate - pad, max_rate + pad])
     fig.update_yaxes(title="XP/day")
     return fig
 
@@ -1205,7 +1321,11 @@ def filter_inactive_compare_players(skill: str, compare_players: list[dict]) -> 
     return filtered
 
 
-def make_multi_player_xp_trend(skill: str, fixed_players: list[dict]) -> go.Figure:
+def make_multi_player_xp_trend(
+    skill: str,
+    fixed_players: list[dict],
+    window_days: int | None = DEFAULT_OVERALL_WINDOW_DAYS,
+) -> go.Figure:
     fig = go.Figure()
 
     if not skill or not fixed_players:
@@ -1221,6 +1341,7 @@ def make_multi_player_xp_trend(skill: str, fixed_players: list[dict]) -> go.Figu
     global_max_time = None
     global_min_xp = None
     global_max_xp = None
+    player_histories: list[pd.DataFrame] = []
 
     for player_cfg in fixed_players:
         player_value = player_cfg["value"]
@@ -1229,6 +1350,8 @@ def make_multi_player_xp_trend(skill: str, fixed_players: list[dict]) -> go.Figu
         df = get_skill_history(player, skill, mode)
         if df.empty:
             continue
+
+        player_histories.append(df)
 
         first_ts = df["timestamp"].iloc[0]
         last_ts = df["timestamp"].iloc[-1]
@@ -1274,12 +1397,31 @@ def make_multi_player_xp_trend(skill: str, fixed_players: list[dict]) -> go.Figu
         )
     else:
         if global_min_time is not None and global_max_time is not None:
-            time_span = global_max_time - global_min_time
-            time_pad = time_span * 0.08 if time_span > pd.Timedelta(0) else pd.Timedelta(hours=6)
-            fig.update_xaxes(range=[global_min_time, global_max_time + time_pad])
-        if global_min_xp is not None and global_max_xp is not None and global_max_xp > global_min_xp:
-            pad = max(int((global_max_xp - global_min_xp) * 0.05), 1)
-            fig.update_yaxes(range=[global_min_xp - pad, global_max_xp + pad])
+            if window_days is None:
+                time_span = global_max_time - global_min_time
+                time_pad = time_span * 0.08 if time_span > pd.Timedelta(0) else pd.Timedelta(hours=6)
+                fig.update_xaxes(range=[global_min_time, global_max_time + time_pad])
+                if global_min_xp is not None and global_max_xp is not None and global_max_xp > global_min_xp:
+                    pad = max(int((global_max_xp - global_min_xp) * 0.05), 1)
+                    fig.update_yaxes(range=[global_min_xp - pad, global_max_xp + pad])
+            else:
+                window_start = max(global_min_time, global_max_time - pd.Timedelta(days=window_days))
+                fig.update_xaxes(range=[window_start, global_max_time])
+
+                visible_min_xp = None
+                visible_max_xp = None
+                for history in player_histories:
+                    window_history = history[history["timestamp"] >= window_start]
+                    if window_history.empty:
+                        continue
+                    history_min_xp = int(window_history["xp"].min())
+                    history_max_xp = int(window_history["xp"].max())
+                    visible_min_xp = history_min_xp if visible_min_xp is None else min(visible_min_xp, history_min_xp)
+                    visible_max_xp = history_max_xp if visible_max_xp is None else max(visible_max_xp, history_max_xp)
+
+                if visible_min_xp is not None and visible_max_xp is not None and visible_max_xp > visible_min_xp:
+                    pad = max(int((visible_max_xp - visible_min_xp) * 0.05), 1)
+                    fig.update_yaxes(range=[visible_min_xp - pad, visible_max_xp + pad])
 
     _style_fig(fig, f"XP over time for selected players ({skill})")
     fig.update_layout(
@@ -1430,6 +1572,21 @@ def main_page_layout():
                 style={"width": "200px", "fontFamily": "Georgia, serif"},
             )
         ], className="control-group"),
+        html.Div([
+            html.Label("Range", style={"color": TEXT_DIM, "fontSize": "11px",
+                                        "textTransform": "uppercase",
+                                        "letterSpacing": "1px", "marginBottom": "6px",
+                                        "fontFamily": "Georgia, serif"}),
+            dcc.RadioItems(
+                id="chart-range-toggle",
+                options=TIME_RANGE_OPTIONS,
+                value=TIME_RANGE_DEFAULT,
+                inline=True,
+                inputStyle={"marginRight": "6px", "marginLeft": "12px"},
+                labelStyle={"color": TEXT, "fontSize": "13px", "fontFamily": "monospace"},
+                style={"minHeight": "38px", "display": "flex", "alignItems": "center"},
+            ),
+        ], className="control-group"),
     ], className="controls-bar", style={
         "display": "flex", "gap": "32px", "alignItems": "flex-end",
         "padding": "20px 32px", "borderBottom": f"1px solid {BORDER}",
@@ -1534,6 +1691,20 @@ def compare_page_layout():
                     style={"width": "220px", "fontFamily": "Georgia, serif"},
                 )
             ], className="control-group"),
+            html.Div([
+                html.Label("Range", style={"color": TEXT_DIM, "fontSize": "11px",
+                                           "textTransform": "uppercase", "letterSpacing": "1px",
+                                           "marginBottom": "6px", "fontFamily": "Georgia, serif"}),
+                dcc.RadioItems(
+                    id="compare-range-toggle",
+                    options=TIME_RANGE_OPTIONS,
+                    value=TIME_RANGE_DEFAULT,
+                    inline=True,
+                    inputStyle={"marginRight": "6px", "marginLeft": "12px"},
+                    labelStyle={"color": TEXT, "fontSize": "13px", "fontFamily": "monospace"},
+                    style={"minHeight": "38px", "display": "flex", "alignItems": "center"},
+                )
+            ], className="control-group"),
             html.Div(
                 "Stored tracking (collector): 10 ahead + XESPIS + 3 behind for Overall and each skill. Display: 3 ahead + XESPIS + 3 behind per skill, excluding outliers (>5M Overall, >1M skill XP from XESPIS) and no-movement players (30 days).",
                 className="compare-notes",
@@ -1635,11 +1806,10 @@ def update_stat_cards(player_value, skill):
     header_player_text = f"Current player: {player_label}"
 
     df_latest = get_latest_skills(player, mode)
-    n_snaps = get_snapshot_count(player, mode)
     first_date, last_date = get_first_last_dates(player, mode)
 
     if df_latest.empty:
-        return [stat_card("Snapshots", str(n_snaps))], header_player_text, "No data yet"
+        return [], header_player_text, "No data yet"
 
     row = df_latest[df_latest["skill"] == skill]
     level = int(row["level"].iloc[0]) if not row.empty and pd.notna(row["level"].iloc[0]) else "—"
@@ -1657,6 +1827,8 @@ def update_stat_cards(player_value, skill):
     total_xp    = int(overall_row["xp"].iloc[0])    if not overall_row.empty and pd.notna(overall_row["xp"].iloc[0])    else "—"
     avg_daily_7d = get_7d_avg_daily_overall_xp_gain(player, mode)
     avg_daily_7d_display = f"{avg_daily_7d:,}" if isinstance(avg_daily_7d, int) else "—"
+    xp_delta_7d = get_7d_overall_xp_delta(player, mode)
+    xp_delta_7d_display = f"{xp_delta_7d:+,}" if isinstance(xp_delta_7d, int) else "—"
     rank_progress = get_rank_progress(
         skill,
         player,
@@ -1666,26 +1838,6 @@ def update_stat_cards(player_value, skill):
         rank if isinstance(rank, int) else None,
     )
     rank_target = rank_progress["target"] if rank_progress else "Rank Progress"
-    rank_xp_needed = f"{rank_progress['xp_needed']:,}" if rank_progress else "—"
-    rank_level_note = ""
-    if rank_progress and isinstance(rank_progress.get("levels_needed"), int):
-        lvls = rank_progress["levels_needed"]
-        rank_level_note = f"~{lvls} level{'s' if lvls != 1 else ''}"
-
-    quest_summary = get_latest_quest_summary(player, mode)
-    quest_completed = "—"
-    quest_in_progress = "—"
-    quest_not_started = "—"
-    quest_tooltip = "No quest summary export linked yet."
-    if quest_summary:
-        if isinstance(quest_summary["completed"], int):
-            quest_completed = f"{quest_summary['completed']:,}"
-        if isinstance(quest_summary["in_progress"], int):
-            quest_in_progress = f"{quest_summary['in_progress']:,}"
-        if isinstance(quest_summary["not_started"], int):
-            quest_not_started = f"{quest_summary['not_started']:,}"
-        source = quest_summary.get("source") or "quest export"
-        quest_tooltip = f"Latest quest state counts from {source}."
 
     cards = [
         stat_card("Total Level",    f"{total_level:,}" if isinstance(total_level, int) else total_level),
@@ -1695,27 +1847,22 @@ def update_stat_cards(player_value, skill):
             avg_daily_7d_display,
             tooltip="Overall XP gained over the latest 7-day window divided by elapsed days between snapshots.",
         ),
-        stat_card("Quests Completed", quest_completed, tooltip=quest_tooltip),
-        stat_card("Quests In Progress", quest_in_progress, tooltip=quest_tooltip),
-        stat_card("Quests Not Started", quest_not_started, tooltip=quest_tooltip),
+        stat_card(
+            "7D XP Trend",
+            xp_delta_7d_display,
+            delta="Overall XP net change over the latest 7-day window" if isinstance(xp_delta_7d, int) else "",
+            delta_positive=(xp_delta_7d or 0) >= 0,
+            tooltip="Signed Overall XP change over the latest available 7-day window.",
+        ),
         stat_card(
             "Rank Target",
             rank_target,
             tooltip="For selected skill: next rank if already ranked, or first ranked threshold if currently unranked.",
         ),
-        stat_card(
-            "XP To Target",
-            rank_xp_needed,
-            delta=rank_level_note,
-            delta_positive=True,
-            tooltip="Estimated XP needed for selected rank target; threshold moves as other players gain XP.",
-        ),
         stat_card(f"{skill} Level", f"{level}"         if isinstance(level, int)        else level),
         stat_card(f"{skill} XP",    f"{xp:,}"          if isinstance(xp, int)           else xp,
                   delta=xp_gained, delta_positive=True),
         stat_card(f"{skill} Rank",  f"#{rank:,}"       if isinstance(rank, int)         else rank),
-        stat_card("Mode",           mode_label),
-        stat_card("Snapshots",      str(n_snaps)),
     ]
 
     last_updated = f"Last updated: {last_date}  |  Tracking since: {first_date}" if last_date else ""
@@ -1789,18 +1936,20 @@ def update_rank_target_table(player_value):
     Output("xp-to-target-chart", "figure"),
     Input("player-dropdown", "value"),
     Input("skill-dropdown", "value"),
+    Input("chart-range-toggle", "value"),
 )
-def update_trend_charts(player_value, skill):
+def update_trend_charts(player_value, skill, range_value):
     if not player_value or not skill:
         empty = go.Figure()
         _style_fig(empty, "")
         return empty, empty, empty, empty
     player, mode = parse_player_value(player_value)
+    window_days = _resolve_time_window_days(range_value)
     return (
-        make_xp_trend(player, skill, mode),
-        make_rank_trend(player, skill, mode),
-        make_avg_daily_xp_trend(player, mode),
-        make_xp_to_target_trend(player, skill, mode),
+        make_xp_trend(player, skill, mode, window_days=window_days),
+        make_rank_trend(player, skill, mode, window_days=window_days),
+        make_avg_daily_xp_trend(player, mode, window_days=window_days),
+        make_xp_to_target_trend(player, skill, mode, window_days=window_days),
     )
 
 
@@ -1822,17 +1971,19 @@ def update_overview_charts(player_value):
     Output("xp-compare-chart", "figure"),
     Output("xp-overall-compare-chart", "figure"),
     Input("compare-skill-dropdown", "value"),
+    Input("compare-range-toggle", "value"),
 )
-def update_compare_chart(skill):
+def update_compare_chart(skill, range_value):
     selected_skill = skill if skill in SKILL_NAMES else "Overall"
+    window_days = _resolve_time_window_days(range_value)
     selected_players = get_anchor_group(selected_skill, DISPLAY_AHEAD_COUNT, DISPLAY_BEHIND_COUNT)
     overall_players = get_anchor_group("Overall", DISPLAY_AHEAD_COUNT, DISPLAY_BEHIND_COUNT)
     selected_players = filter_compare_outliers(selected_skill, selected_players)
     overall_players = filter_compare_outliers("Overall", overall_players)
     selected_players = filter_inactive_compare_players(selected_skill, selected_players)
     overall_players = filter_inactive_compare_players("Overall", overall_players)
-    selected_skill_figure = make_multi_player_xp_trend(selected_skill, selected_players)
-    overall_figure = make_multi_player_xp_trend("Overall", overall_players)
+    selected_skill_figure = make_multi_player_xp_trend(selected_skill, selected_players, window_days=window_days)
+    overall_figure = make_multi_player_xp_trend("Overall", overall_players, window_days=window_days)
     return selected_skill_figure, overall_figure
 
 
