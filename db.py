@@ -2,7 +2,7 @@ import os
 from functools import lru_cache
 
 from sqlalchemy import Column, Integer, MetaData, String, Table, create_engine
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
 
 SQLITE_DB_PATH = os.getenv("OSRS_DB_PATH", "osrs_hiscores.db")
 
@@ -60,7 +60,8 @@ def is_postgres_url(database_url: str) -> bool:
 def get_engine() -> Engine:
     database_url = get_database_url()
     if is_postgres_url(database_url):
-        return create_engine(database_url, future=True, pool_pre_ping=True)
+        postgres_url = make_url(database_url).set(drivername="postgresql+psycopg2")
+        return create_engine(postgres_url, future=True, pool_pre_ping=True)
 
     sqlite_url = f"sqlite:///{SQLITE_DB_PATH.replace('\\', '/')}"
     return create_engine(sqlite_url, future=True)
