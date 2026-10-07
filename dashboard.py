@@ -658,6 +658,37 @@ def get_snapshot_count(player: str, mode: str = "regular") -> int:
     return int(n)
 
 
+def get_skill_xp_gains(player: str, start_date: str, end_date: str) -> dict[str, list[tuple[str, int]]]:
+    """Returns {mode: [(skill, xp_gained), ...]} for the inclusive UTC date range, sorted by gain."""
+    start = start_date[:10]
+    end_exclusive = (datetime.fromisoformat(end_date[:10]) + timedelta(days=1)).strftime("%Y-%m-%d")
+    with get_conn() as conn:
+        rows = conn.execute(text("""
+            SELECT s.mode, sd.skill,
+                   MAX(CASE WHEN s.timestamp < :start THEN sd.xp END) AS before_xp,
+                   MIN(CASE WHEN s.timestamp >= :start THEN sd.xp END) AS first_xp,
+                   MAX(sd.xp) AS end_xp
+            FROM skill_data sd
+            JOIN snapshots s ON s.id = sd.snapshot_id
+            WHERE LOWER(s.player) = :player
+              AND s.timestamp < :end
+              AND sd.skill <> 'Overall'
+              AND sd.xp >= 0
+            GROUP BY s.mode, sd.skill
+        """), {"player": player.strip().lower(), "start": start, "end": end_exclusive}).fetchall()
+
+    gains: dict[str, list[tuple[str, int]]] = {}
+    for mode, skill, before_xp, first_xp, end_xp in rows:
+        # XP never decreases, so the last value before the range is the true baseline.
+        baseline = before_xp if before_xp is not None else first_xp
+        gained = int(end_xp) - int(baseline) if baseline is not None else 0
+        if gained > 0:
+            gains.setdefault(mode or "regular", []).append((skill, gained))
+    for mode_rows in gains.values():
+        mode_rows.sort(key=lambda r: r[1], reverse=True)
+    return gains
+
+
 def _parse_quest_export_entry(entry: dict) -> dict | None:
     if not isinstance(entry, dict):
         return None
@@ -1544,6 +1575,13 @@ def main_page_layout():
                 "textDecoration": "none",
                 "marginRight": "14px"
             }),
+            dcc.Link("Skill XP Lookup", href="/skill-xp", style={
+                "color": ACCENT,
+                "fontSize": "12px",
+                "fontFamily": "monospace",
+                "textDecoration": "none",
+                "marginRight": "14px"
+            }),
             html.Span(id="current-player-label", style={
                 "color": TEXT_DIM,
                 "fontSize": "12px",
@@ -1738,6 +1776,62 @@ def compare_page_layout():
     ], style={"background": BG, "minHeight": "100vh", "color": TEXT})
 
 
+def skill_xp_page_layout():
+    today = datetime.now(timezone.utc).date()
+    label_style = {"color": TEXT_DIM, "fontSize": "11px", "textTransform": "uppercase",
+                   "letterSpacing": "1px", "marginBottom": "6px", "fontFamily": "Georgia, serif"}
+    return html.Div([
+        html.Div([
+            html.Div([
+                html.Span("⚔", style={"fontSize": "28px", "marginRight": "12px"}),
+                html.Span("Skill XP Lookup", style={
+                    "fontSize": "22px", "fontWeight": "bold",
+                    "color": ACCENT, "fontFamily": "Georgia, serif", "letterSpacing": "1px"
+                }),
+            ], className="top-header-left", style={"display": "flex", "alignItems": "center"}),
+            dcc.Link("← Back to Dashboard", href="/", style={
+                "color": ACCENT, "fontSize": "12px", "fontFamily": "monospace", "textDecoration": "none"
+            })
+        ], className="top-header", style={
+            "display": "flex", "justifyContent": "space-between", "alignItems": "center",
+            "padding": "18px 32px", "borderBottom": f"1px solid {BORDER}", "background": CARD_BG
+        }),
+
+        html.Div([
+            html.Div([
+                html.Label("Username", style=label_style),
+                dcc.Input(
+                    id="skill-xp-username",
+                    type="text",
+                    placeholder="Enter username",
+                    debounce=True,
+                    style={"width": "240px", "height": "36px", "padding": "0 10px",
+                           "fontFamily": "Georgia, serif"},
+                ),
+            ], className="control-group"),
+            html.Div([
+                html.Label("Date Range (UTC)", style=label_style),
+                dcc.DatePickerRange(
+                    id="skill-xp-dates",
+                    start_date=(today - timedelta(days=7)).isoformat(),
+                    end_date=today.isoformat(),
+                    display_format="YYYY-MM-DD",
+                ),
+            ], className="control-group"),
+            html.Button("Look up", id="skill-xp-submit", n_clicks=0, style={
+                "height": "38px", "padding": "0 18px", "background": ACCENT, "color": BG,
+                "border": "none", "borderRadius": "4px", "cursor": "pointer",
+                "fontFamily": "Georgia, serif", "fontWeight": "bold"
+            }),
+        ], className="controls-bar", style={
+            "display": "flex", "gap": "32px", "alignItems": "flex-end",
+            "padding": "20px 32px", "borderBottom": f"1px solid {BORDER}", "background": "#10101a"
+        }),
+
+        html.Div(id="skill-xp-results", style={"padding": "20px 32px 32px 32px"}),
+    ], style={"background": BG, "minHeight": "100vh", "color": TEXT})
+
+
 app.layout = html.Div([
     dcc.Location(id="url", refresh=False),
     html.Div(id="page-content")
@@ -1753,6 +1847,8 @@ app.layout = html.Div([
 def render_page(pathname):
     if pathname == "/xp-compare":
         return compare_page_layout()
+    if pathname == "/skill-xp":
+        return skill_xp_page_layout()
     return main_page_layout()
 
 @app.callback(
@@ -1972,6 +2068,56 @@ def update_compare_chart(skill, range_value):
     selected_skill_figure = make_multi_player_xp_trend(selected_skill, selected_players, window_days=window_days)
     overall_figure = make_multi_player_xp_trend("Overall", overall_players, window_days=window_days)
     return selected_skill_figure, overall_figure
+
+
+@app.callback(
+    Output("skill-xp-results", "children"),
+    Input("skill-xp-submit", "n_clicks"),
+    Input("skill-xp-username", "value"),
+    Input("skill-xp-dates", "start_date"),
+    Input("skill-xp-dates", "end_date"),
+)
+def update_skill_xp_results(_, username, start_date, end_date):
+    message_style = {"color": TEXT_DIM, "fontSize": "13px", "fontFamily": "monospace"}
+    if not username or not username.strip():
+        return html.Div("Enter a username to see XP gained per skill.", style=message_style)
+    if not start_date or not end_date:
+        return html.Div("Pick a start and end date.", style=message_style)
+
+    gains = get_skill_xp_gains(username, start_date, end_date)
+    if not gains:
+        return html.Div(
+            f"No XP gains found for '{username.strip()}' between {start_date[:10]} and {end_date[:10]}.",
+            style=message_style,
+        )
+
+    cell = {"padding": "7px 10px"}
+    tables = []
+    for mode, rows in sorted(gains.items()):
+        total = sum(xp for _, xp in rows)
+        tables.append(html.Div([
+            html.Div(
+                f"{username.strip()} ({mode.replace('_', ' ')}) — {total:,} XP total",
+                style={"color": ACCENT, "fontSize": "14px", "fontFamily": "Georgia, serif", "marginBottom": "8px"}
+            ),
+            html.Table([
+                html.Thead(html.Tr([
+                    html.Th("Skill", style={**cell, "textAlign": "left", "color": TEXT_DIM}),
+                    html.Th("XP Gained", style={**cell, "textAlign": "right", "color": TEXT_DIM}),
+                ], style={"borderBottom": f"1px solid {BORDER}"})),
+                html.Tbody([
+                    html.Tr([
+                        html.Td(skill, style=cell),
+                        html.Td(f"{xp:,}", style={**cell, "textAlign": "right"}),
+                    ], style={"borderTop": f"1px solid {BORDER}"})
+                    for skill, xp in rows
+                ]),
+            ], style={"width": "100%", "maxWidth": "480px", "borderCollapse": "collapse", "fontSize": "13px"}),
+        ], style={
+            "background": CARD_BG, "border": f"1px solid {BORDER}", "borderRadius": "8px",
+            "padding": "12px", "marginBottom": "16px", "maxWidth": "506px"
+        }))
+    return tables
 
 
 if __name__ == "__main__":
