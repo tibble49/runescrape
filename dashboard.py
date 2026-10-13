@@ -20,6 +20,7 @@ from sqlalchemy import text
 import dash
 from dash import dcc, html, Input, Output, State, callback
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 from db import get_engine, get_database_url, init_db, is_postgres_url
 
@@ -659,9 +660,12 @@ def get_snapshot_count(player: str, mode: str = "regular") -> int:
 
 
 def get_skill_xp_gains(player: str, start_date: str, end_date: str) -> dict[str, list[tuple[str, int]]]:
-    """Returns {mode: [(skill, xp_gained), ...]} for the inclusive UTC date range, sorted by gain."""
-    start = start_date[:10]
-    end_exclusive = (datetime.fromisoformat(end_date[:10]) + timedelta(days=1)).strftime("%Y-%m-%d")
+    """Returns XP gains for the inclusive Eastern date range, sorted by gain."""
+    eastern = ZoneInfo("America/New_York")
+    start = datetime.fromisoformat(start_date[:10]).replace(tzinfo=eastern).astimezone(timezone.utc).isoformat()
+    end_exclusive = (
+        datetime.fromisoformat(end_date[:10]) + timedelta(days=1)
+    ).replace(tzinfo=eastern).astimezone(timezone.utc).isoformat()
     with get_conn() as conn:
         rows = conn.execute(text("""
             SELECT s.mode, sd.skill,
@@ -1777,7 +1781,7 @@ def compare_page_layout():
 
 
 def skill_xp_page_layout():
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(ZoneInfo("America/New_York")).date()
     label_style = {"color": TEXT_DIM, "fontSize": "11px", "textTransform": "uppercase",
                    "letterSpacing": "1px", "marginBottom": "6px", "fontFamily": "Georgia, serif"}
     return html.Div([
@@ -1810,7 +1814,7 @@ def skill_xp_page_layout():
                 ),
             ], className="control-group"),
             html.Div([
-                html.Label("Date Range (UTC)", style=label_style),
+                html.Label("Date Range (Eastern Time)", style=label_style),
                 dcc.DatePickerRange(
                     id="skill-xp-dates",
                     start_date=(today - timedelta(days=7)).isoformat(),
