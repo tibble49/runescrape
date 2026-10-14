@@ -92,6 +92,7 @@ INACTIVE_DAYS_LIMIT = 30
 
 BASE_TRACKED_ENTRIES = [
     ("tibble49", "regular"),
+    ("hheimdall", "hardcore_ironman"),
     (ANCHOR_PLAYER, ANCHOR_MODE),
 ]
 
