@@ -90,6 +90,7 @@ After a week or two you'll have enough data for meaningful trend lines.
 - **Skills overview** — bar chart of all current skill levels (including Sailing)
 - **XP distribution** — pie chart of XP spread across your top 12 skills
 - **Multi-player support** — use the Player dropdown to switch between tracked players
+- **Skill XP Lookup** — search saved usernames in a dropdown and view per-skill XP gains for an Eastern Time date range
 
 ---
 

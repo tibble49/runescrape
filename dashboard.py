@@ -1781,6 +1781,12 @@ def compare_page_layout():
 
 
 def skill_xp_page_layout():
+    with get_conn() as conn:
+        usernames = conn.execute(text(
+            "SELECT MIN(TRIM(player)) FROM snapshots "
+            "WHERE TRIM(player) <> '' "
+            "GROUP BY LOWER(TRIM(player)) ORDER BY LOWER(TRIM(player))"
+        )).scalars().all()
     today = datetime.now(ZoneInfo("America/New_York")).date()
     label_style = {"color": TEXT_DIM, "fontSize": "11px", "textTransform": "uppercase",
                    "letterSpacing": "1px", "marginBottom": "6px", "fontFamily": "Georgia, serif"}
@@ -1804,13 +1810,14 @@ def skill_xp_page_layout():
         html.Div([
             html.Div([
                 html.Label("Username", style=label_style),
-                dcc.Input(
+                dcc.Dropdown(
                     id="skill-xp-username",
-                    type="text",
-                    placeholder="Enter username",
-                    debounce=True,
-                    style={"width": "240px", "height": "36px", "padding": "0 10px",
-                           "fontFamily": "Georgia, serif"},
+                    options=[{"label": username, "value": username} for username in usernames],
+                    placeholder="Search saved usernames",
+                    searchable=True,
+                    clearable=True,
+                    className="responsive-dropdown",
+                    style={"width": "260px", "fontFamily": "Georgia, serif"},
                 ),
             ], className="control-group"),
             html.Div([
@@ -2084,7 +2091,7 @@ def update_compare_chart(skill, range_value):
 def update_skill_xp_results(_, username, start_date, end_date):
     message_style = {"color": TEXT_DIM, "fontSize": "13px", "fontFamily": "monospace"}
     if not username or not username.strip():
-        return html.Div("Enter a username to see XP gained per skill.", style=message_style)
+        return html.Div("Select a saved username to see XP gained per skill.", style=message_style)
     if not start_date or not end_date:
         return html.Div("Pick a start and end date.", style=message_style)
 
