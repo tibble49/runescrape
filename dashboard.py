@@ -660,7 +660,7 @@ def get_snapshot_count(player: str, mode: str = "regular") -> int:
 
 
 def get_skill_xp_gains(player: str, start_date: str, end_date: str) -> dict[str, list[tuple[str, int]]]:
-    """Returns XP gains for the inclusive Eastern date range, sorted by gain."""
+    """Returns XP gains observed within the inclusive Eastern date range, sorted by gain."""
     eastern = ZoneInfo("America/New_York")
     start = datetime.fromisoformat(start_date[:10]).replace(tzinfo=eastern).astimezone(timezone.utc).isoformat()
     end_exclusive = (
@@ -669,12 +669,12 @@ def get_skill_xp_gains(player: str, start_date: str, end_date: str) -> dict[str,
     with get_conn() as conn:
         rows = conn.execute(text("""
             SELECT s.mode, sd.skill,
-                   MAX(CASE WHEN s.timestamp < :start THEN sd.xp END) AS before_xp,
-                   MIN(CASE WHEN s.timestamp >= :start THEN sd.xp END) AS first_xp,
+                                     MIN(sd.xp) AS first_xp,
                    MAX(sd.xp) AS end_xp
             FROM skill_data sd
             JOIN snapshots s ON s.id = sd.snapshot_id
             WHERE LOWER(s.player) = :player
+                            AND s.timestamp >= :start
               AND s.timestamp < :end
               AND sd.skill <> 'Overall'
               AND sd.xp >= 0
@@ -682,10 +682,8 @@ def get_skill_xp_gains(player: str, start_date: str, end_date: str) -> dict[str,
         """), {"player": player.strip().lower(), "start": start, "end": end_exclusive}).fetchall()
 
     gains: dict[str, list[tuple[str, int]]] = {}
-    for mode, skill, before_xp, first_xp, end_xp in rows:
-        # XP never decreases, so the last value before the range is the true baseline.
-        baseline = before_xp if before_xp is not None else first_xp
-        gained = int(end_xp) - int(baseline) if baseline is not None else 0
+    for mode, skill, first_xp, end_xp in rows:
+        gained = int(end_xp) - int(first_xp)
         if gained > 0:
             gains.setdefault(mode or "regular", []).append((skill, gained))
     for mode_rows in gains.values():

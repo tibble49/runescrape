@@ -92,6 +92,11 @@ After a week or two you'll have enough data for meaningful trend lines.
 - **Multi-player support** — use the Player dropdown to switch between tracked players
 - **Skill XP Lookup** — search saved usernames in a dropdown and view per-skill XP gains for an Eastern Time date range
 
+Skill XP Lookup compares saved XP values only within the selected inclusive dates.
+It needs at least two snapshots per skill to observe a gain. XP earned before the
+first snapshot in the range is not counted, because its date cannot be established
+from the saved data.
+
 ---
 
 ## Optional RuneLite quest summary import
